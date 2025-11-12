@@ -58,6 +58,10 @@ cd scanner
 
 #下载依赖
 
+go get github.com/cheggaaa/pb/v3
+
+go get golang.org/x/sys/unix  # 用于信号处理
+
 go mod tidy
 
 #编译生成可执行文件（优化 + 压缩）
