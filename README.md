@@ -60,7 +60,7 @@ cd scanner
 
 go get github.com/cheggaaa/pb/v3
 
-go get golang.org/x/sys/unix  # 用于信号处理
+go get golang.org/x/sys/unix  
 
 go mod tidy
 
