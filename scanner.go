@@ -3,7 +3,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,17 +12,16 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// Scan 并发扫描代理，返回有效节点列表
-func Scan(proxies []string, threads int, timeout time.Duration) []string {
+func Scan(proxies []string, threads int, timeout time.Duration, testURL string) []string {
 	var results []string
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	sem := make(chan struct{}, threads) // 信号量控制并发
+	sem := make(chan struct{}, threads)
 
-	for _, proxyStr := range proxies {
+	for _, p := range proxies {
 		wg.Add(1)
-		go func(p string) {
+		go func(proxyStr string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -31,58 +29,76 @@ func Scan(proxies []string, threads int, timeout time.Duration) []string {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 
-			protocol, addr, err := parseProxy(p)
+			protocol, addr, auth, err := parseProxy(proxyStr)
 			if err != nil {
 				return
 			}
 
-			valid := testProxy(ctx, protocol, addr)
-			if valid {
+			if testProxy(ctx, protocol, addr, auth, testURL) {
 				mu.Lock()
-				results = append(results, fmt.Sprintf("%s://%s", protocol, p))
+				results = append(results, fmt.Sprintf("%s://%s", protocol, proxyStr))
 				mu.Unlock()
 			}
-		}(proxyStr)
+		}(p)
 	}
 
 	wg.Wait()
 	return results
 }
 
-// parseProxy 解析代理字符串: user:pass@host:port -> protocol, host:port
-func parseProxy(proxyStr string) (string, string, error) {
-	parts := strings.SplitN(proxyStr, "://", 2)
-	protocol := strings.ToLower(strings.TrimSpace(parts[0]))
-	if protocol == "" {
-		protocol = "http" // 默认
-	} else {
-		parts[1] = protocol + "://" + parts[1] // 重新组装
-		protocol = protocol[:len(protocol)-3] // 移除 ://
+// parseProxy 返回 protocol, host:port, auth (user:pass), error
+func parseProxy(proxyStr string) (string, string, *proxy.Auth, error) {
+	// 提取协议
+	protocol := "http"
+	if strings.HasPrefix(proxyStr, "http://") {
+		proxyStr = strings.TrimPrefix(proxyStr, "http://")
+	} else if strings.HasPrefix(proxyStr, "https://") {
+		protocol = "https"
+		proxyStr = strings.TrimPrefix(proxyStr, "https://")
+	} else if strings.HasPrefix(proxyStr, "socks4://") {
+		protocol = "socks4"
+		proxyStr = strings.TrimPrefix(proxyStr, "socks4://")
+	} else if strings.HasPrefix(proxyStr, "socks5://") {
+		protocol = "socks5"
+		proxyStr = strings.TrimPrefix(proxyStr, "socks5://")
 	}
 
-	u, err := url.Parse(parts[1])
+	// 提取 user:pass@host:port
+	u, err := url.Parse("http://" + proxyStr)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
-	addr := u.Host
-	if addr == "" {
-		addr = u.Path // Fallback for no host
+
+	var auth *proxy.Auth
+	if u.User != nil {
+		pass, _ := u.User.Password()
+		auth = &proxy.Auth{User: u.User.Username(), Password: pass}
 	}
-	return protocol, addr, nil
+
+	return protocol, u.Host, auth, nil
 }
 
-// testProxy 测试代理有效性（使用 httpbin.org/ip 和延迟测试）
-func testProxy(ctx context.Context, protocol, addr string) bool {
+// testProxy 使用自定义 testURL 进行 CONNECT/GET 测试
+func testProxy(ctx context.Context, protocol, addr string, auth *proxy.Auth, testURL string) bool {
 	var dialer proxy.Dialer
 	var err error
 
 	switch protocol {
 	case "http", "https":
-		dialer, err = proxy.FromURL(&url.URL{Scheme: protocol, Host: addr}, proxy.Direct)
+		// HTTP/HTTPS 代理使用 FromURL
+		scheme := "http"
+		if protocol == "https" {
+			scheme = "https"
+		}
+		u := &url.URL{Scheme: scheme, Host: addr}
+		if auth != nil {
+			u.User = url.UserPassword(auth.User, auth.Password)
+		}
+		dialer, err = proxy.FromURL(u, proxy.Direct)
 	case "socks4":
-		dialer, err = proxy.SOCKS4("tcp", addr, nil, proxy.Direct)
+		dialer, err = proxy.SOCKS4("tcp", addr, auth, proxy.Direct)
 	case "socks5":
-		dialer, err = proxy.SOCKS5("tcp", addr, nil, proxy.Direct)
+		dialer, err = proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
 	default:
 		return false
 	}
@@ -91,22 +107,25 @@ func testProxy(ctx context.Context, protocol, addr string) bool {
 	}
 
 	transport := &http.Transport{
-		DialContext: dialer.DialContext,
-		Proxy:       http.NoProxy,
+		DialContext:       dialer.DialContext,
+		Proxy:             http.ProxyFromEnvironment,
 		DisableKeepAlives: true,
 	}
 
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   5 * time.Second,
+		Timeout:   8 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", "http://httpbin.org/ip", nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", testURL, nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
 
-	return resp.StatusCode == 200
+	return resp.StatusCode >= 200 && resp.StatusCode < 400
 }
