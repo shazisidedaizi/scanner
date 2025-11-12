@@ -1,11 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -29,7 +30,6 @@ var (
 		{"proxy", "proxy"}, {"socks5", "socks5"}, {"123456", "123456"}, {"test", "test"},
 		{"guest", "guest"}, {"", "admin"}, {"admin", ""}, {"12345", "12345"},
 		{"qwe123", "qwe123"}, {"abc123", "abc123"}, {"password", "password"},
-		// ... 以下为原脚本全部密码（已去重）
 		{"12349", "12349"}, {"socks", "socks"}, {"demo", "demo"}, {"fuckyou", "fuckyou"},
 		{"1080", "1080"}, {"123", "321"}, {"1234", "4321"}, {"12345", "54321"},
 		{"123456", "654321"}, {"12345678", "87654321"}, {"123456789", "987654321"},
@@ -47,7 +47,7 @@ var (
 )
 
 func main() {
-	// ==================== 参数解析 ====================
+	// 参数解析
 	ipRange := flag.String("ip-range", "", "IP range: 192.168.1.1-192.168.1.255")
 	portInput := flag.String("port", "1080", "Ports: 1080 / 80 8080 / 1-65535")
 	threads := flag.Int("threads", 15000, "Max concurrent connections")
@@ -60,7 +60,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ==================== 解析 IP 和端口 ====================
+	// 解析 IP 和端口
 	ips, err := parseIPRange(*ipRange)
 	if err != nil {
 		fmt.Printf("IP range error: %v\n", err)
@@ -82,7 +82,7 @@ func main() {
 	fmt.Printf("[*] IPs: %d, Ports: %d, Total: %d\n", len(ips), len(ports), len(candidates))
 	fmt.Printf("[*] Threads: %d, Timeout: %v\n", *threads, *timeout)
 
-	// ==================== 初始化输出文件 ====================
+	// 初始化输出文件
 	detailFile, _ = os.OpenFile("result_detail.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	validFile, _ = os.OpenFile("proxy_valid.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	defer detailFile.Close()
@@ -91,11 +91,11 @@ func main() {
 	fmt.Fprintln(detailFile, "# 全协议扫描详细日志")
 	fmt.Fprintln(validFile, "# scheme://[user:pass@]ip:port#CC")
 
-	// ==================== 进度条 ====================
+	// 进度条
 	bar := pb.StartNew(len(candidates))
 	bar.SetTemplate(`{{counters . }} {{bar . }} {{percent . }} {{etime . }}`)
 
-	// ==================== 并发控制 ====================
+	// 并发控制
 	sem := make(chan struct{}, *threads)
 	var wg sync.WaitGroup
 
@@ -105,7 +105,7 @@ func main() {
 	signal.Notify(c, os.Interrupt)
 	go func() { <-c; cancel(); bar.Finish() }()
 
-	// ==================== 主循环 ====================
+	// 主循环
 	for _, addr := range candidates {
 		if ctx.Err() != nil {
 			break
@@ -196,7 +196,7 @@ func compareIP(a, b net.IP) int {
 	return strings.Compare(a.String(), b.String())
 }
 
-// ==================== 扫描结果结构 ====================
+// ==================== 结果结构 ====================
 type Result struct {
 	IP        string
 	Port      int
@@ -217,7 +217,7 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			return result
 		}
 
-		// 1. 先尝试匿名
+		// 1. 匿名测试
 		ok, lat, exportIP := testProxy(ctx, scheme, ip, port, nil, timeout)
 		if ok {
 			result.Scheme = scheme
@@ -257,13 +257,12 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 	return result
 }
 
-// ==================== 协议测试 ====================
+// ==================== 协议测试（修复 SOCKS4）===================
 func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Auth, timeout time.Duration) (bool, int, string) {
 	addr := fmt.Sprintf("%s:%d", ip, port)
 	testURL := "http://ifconfig.me"
 
-	var dialer proxy.Dialer
-	var err error
+	var dialer func(ctx context.Context, network, address string) (net.Conn, error)
 
 	switch scheme {
 	case "http", "https":
@@ -271,19 +270,26 @@ func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Aut
 		if auth != nil {
 			u.User = url.UserPassword(auth.User, auth.Password)
 		}
-		dialer, err = proxy.FromURL(u, proxy.Direct)
-	case "socks4":
-		dialer, err = proxy.SOCKS4("tcp", addr, auth, proxy.Direct)
+		d, err := proxy.FromURL(u, proxy.Direct)
+		if err != nil {
+			return false, 0, ""
+		}
+		dialer = d.(proxy.ContextDialer).DialContext
 	case "socks5":
-		dialer, err = proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
+		d, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
+		if err != nil {
+			return false, 0, ""
+		}
+		dialer = d.(proxy.ContextDialer).DialContext
+	case "socks4":
+		dialer = socks4Dialer(addr, auth)
 	default:
 		return false, 0, ""
 	}
-	if err != nil {
-		return false, 0, ""
-	}
 
-	transport := &http.Transport{DialContext: dialer.DialContext}
+	transport := &http.Transport{
+		DialContext: dialer,
+	}
 	client := &http.Client{Transport: transport, Timeout: timeout}
 
 	start := time.Now()
@@ -299,6 +305,47 @@ func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Aut
 	latency := int(time.Since(start).Milliseconds())
 
 	return resp.StatusCode == 200 && isValidIP(exportIP), latency, exportIP
+}
+
+// 手动实现 SOCKS4 拨号（Go 官方已移除）
+func socks4Dialer(addr string, auth *proxy.Auth) func(ctx context.Context, network, target string) (net.Conn, error) {
+	return func(ctx context.Context, network, target string) (net.Conn, error) {
+		d := net.Dialer{Timeout: 5 * time.Second}
+		conn, err := d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+
+		// SOCKS4 请求
+		ip, portStr, _ := net.SplitHostPort(target)
+		port, _ := strconv.Atoi(portStr)
+		ipBytes := net.ParseIP(ip).To4()
+
+		req := []byte{4, 1, byte(port >> 8), byte(port), ipBytes[0], ipBytes[1], ipBytes[2], ipBytes[3], 0}
+		if auth != nil && auth.User != "" {
+			req = append(req, []byte(auth.User)...)
+			req = append(req, 0)
+		}
+		req = append(req, 0)
+
+		if _, err := conn.Write(req); err != nil {
+			conn.Close()
+			return nil, err
+		}
+
+		resp := make([]byte, 8)
+		if _, err := io.ReadFull(conn, resp); err != nil {
+			conn.Close()
+			return nil, err
+		}
+
+		if resp[0] != 0 || resp[1] != 90 {
+			conn.Close()
+			return nil, fmt.Errorf("socks4 rejected")
+		}
+
+		return conn, nil
+	}
 }
 
 func isValidIP(s string) bool {
@@ -348,13 +395,12 @@ func getCountry(ip string) string {
 // ==================== 输出 ====================
 func writeResult(r Result) {
 	// 详细日志
-	line := fmt.Sprintf("%s:%d | %s | %s | %s | %dms | %s | %s",
-		r.IP, r.Port, r.Scheme, r.Country, r.Latency, r.ExportIP, r.Auth)
+	status := "OK"
 	if r.IsWeak {
-		line = strings.Replace(line, " |  | ", " | OK (Weak) | ", 1)
-	} else {
-		line = strings.Replace(line, " |  | ", " | OK | ", 1)
+		status = "OK (Weak)"
 	}
+	line := fmt.Sprintf("%s:%d | %s | %s | %s | %dms | %s | %s",
+		r.IP, r.Port, r.Scheme, status, r.Country, r.Latency, r.ExportIP, r.Auth)
 	fmt.Fprintln(detailFile, line)
 
 	// 有效代理
