@@ -28,10 +28,12 @@
 ### 步骤 1：更新系统 & 安装依赖
 
 sudo apt update && sudo apt upgrade -y
+
 sudo apt install -y git curl wget build-essential upx-ucl
 
 ### 步骤 2：安装 Go 语言（1.21+）
 # 下载 Go 1.21.5（官方推荐）
+
 wget https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
 
 # 解压到 /usr/local
