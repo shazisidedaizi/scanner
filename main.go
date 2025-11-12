@@ -46,26 +46,101 @@ var (
 )
 
 func main() {
-	// 参数解析
+	// ==================== 命令行参数定义 ====================
 	ipRange := flag.String("ip-range", "", "IP range: 192.168.1.1-192.168.1.255")
-	portInput := flag.String("port", "1080", "Ports: 1080 / 80 8080 / 1-65535")
-	threads := flag.Int("threads", 15000, "Max concurrent connections")
-	timeout := flag.Duration("timeout", 5*time.Second, "Timeout per request")
+	portInput := flag.String("port", "", "Ports: 1080 / 80 8080 / 1-65535")
+	threads := flag.Int("threads", 0, "Max concurrent connections")
+	timeout := flag.Duration("timeout", 0, "Timeout per request (e.g. 5s, 10s)")
 	flag.Parse()
 
+	// ==================== 默认值 ====================
+	defaultStart := "157.254.32.0"
+	defaultEnd := "157.254.52.255"
+	defaultPort := "1080"
+	defaultThreads := 15000
+	defaultTimeout := 5 * time.Second
+
+	// ==================== 交互式输入（仅当命令行未提供时）===================
+	var finalIPRange, finalPortInput string
+	var finalThreads int
+	var finalTimeout time.Duration
+
+	// --- IP 范围 ---
 	if *ipRange == "" {
-		fmt.Println("Error: -ip-range is required")
-		flag.Usage()
-		os.Exit(1)
+		fmt.Printf("请输入起始 IP（默认: %s）: ", defaultStart)
+		var startIP string
+		fmt.Scanln(&startIP)
+		if startIP == "" {
+			startIP = defaultStart
+		}
+
+		fmt.Printf("请输入结束 IP（默认: %s）: ", defaultEnd)
+		var endIP string
+		fmt.Scanln(&endIP)
+		if endIP == "" {
+			endIP = defaultEnd
+		}
+
+		finalIPRange = startIP + "-" + endIP
+	} else {
+		finalIPRange = *ipRange
 	}
 
-	// 解析 IP 和端口
-	ips, err := parseIPRange(*ipRange)
+	// --- 端口 ---
+	if *portInput == "" {
+		fmt.Printf("请输入端口（默认: %s）: ", defaultPort)
+		fmt.Scanln(&finalPortInput)
+		if finalPortInput == "" {
+			finalPortInput = defaultPort
+		}
+	} else {
+		finalPortInput = *portInput
+	}
+
+	// --- 并发数 ---
+	if *threads <= 0 {
+		fmt.Printf("请输入最大并发数（默认: %d）: ", defaultThreads)
+		fmt.Scanln(&finalThreads)
+		if finalThreads <= 0 {
+			finalThreads = defaultThreads
+		}
+	} else {
+		finalThreads = *threads
+	}
+
+	// --- 超时时间 ---
+	if *timeout <= 0 {
+		fmt.Print("请输入超时时间（如 5s, 10s，默认: 5s）: ")
+		var timeoutStr string
+		fmt.Scanln(&timeoutStr)
+		if timeoutStr == "" {
+			finalTimeout = defaultTimeout
+		} else {
+			d, err := time.ParseDuration(timeoutStr)
+			if err != nil {
+				fmt.Println("超时格式错误，使用默认 5s")
+				finalTimeout = defaultTimeout
+			} else {
+				finalTimeout = d
+			}
+		}
+	} else {
+		finalTimeout = *timeout
+	}
+
+	// ==================== 打印配置摘要 ====================
+	fmt.Printf("\n[*] 扫描范围: %s\n", finalIPRange)
+	fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
+	fmt.Printf("[*] 最大并发: %d\n", finalThreads)
+	fmt.Printf("[*] 超时时间: %v\n\n", finalTimeout)
+
+	// ==================== 解析 IP 和端口 ====================
+	ips, err := parseIPRange(finalIPRange)
 	if err != nil {
 		fmt.Printf("IP range error: %v\n", err)
 		os.Exit(1)
 	}
-	ports, err := parsePorts(*portInput)
+	ports, err := parsePorts(finalPortInput)
 	if err != nil {
 		fmt.Printf("Port error: %v\n", err)
 		os.Exit(1)
@@ -79,9 +154,9 @@ func main() {
 	}
 
 	fmt.Printf("[*] IPs: %d, Ports: %d, Total: %d\n", len(ips), len(ports), len(candidates))
-	fmt.Printf("[*] Threads: %d, Timeout: %v\n", *threads, *timeout)
+	fmt.Printf("[*] Threads: %d, Timeout: %v\n", finalThreads, finalTimeout)
 
-	// 初始化输出文件
+	// ==================== 初始化输出文件 ====================
 	detailFile, _ = os.OpenFile("result_detail.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	validFile, _ = os.OpenFile("proxy_valid.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	defer detailFile.Close()
