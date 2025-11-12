@@ -1,11 +1,6 @@
 # Proxy Scanner Go Edition
 
-> **Go 语言重写的全协议异步代理扫描器（v5.0+）**  
-> 支持 **HTTP/HTTPS/SOCKS4/SOCKS5**  
-> **自动弱密码爆破 + 国家识别 + 实时进度条**  
-> **零 Python 依赖，单文件二进制，性能提升 10 倍**
 
----
 
 ## 功能特性
 
@@ -50,7 +45,7 @@ source ~/.profile
 
 #验证安装
 
-go version      #输出应为：go version go1.21.5 linux/amd64
+go version          #输出应为：go version go1.21.5 linux/amd64
 
 ###  步骤 3：克隆项目并编译
 #克隆仓库
