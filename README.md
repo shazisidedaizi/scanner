@@ -65,9 +65,9 @@ go mod tidy
 
 #编译生成可执行文件（优化 + 压缩）
 
-go build -ldflags="-s -w" -o proxy-scanner
+go build -ldflags="-s -w" -o scanner
 
-upx --best --lzma proxy-scanner
+upx --best --lzma scanner
 
 #查看是否生成（约 2.5MB）
 
