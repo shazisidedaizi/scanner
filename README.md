@@ -37,9 +37,11 @@ sudo apt install -y git curl wget build-essential upx-ucl
 wget https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
 
 #解压到 /usr/local
+
 sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
 
 #添加环境变量（永久生效）
+
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
 
 echo 'export GOPATH=$HOME/go' >> ~/.profile
@@ -47,24 +49,29 @@ echo 'export GOPATH=$HOME/go' >> ~/.profile
 source ~/.profile
 
 #验证安装
+
 go version
 #输出应为：go version go1.21.5 linux/amd64
 
 ###  步骤 3：克隆项目并编译
 #克隆仓库
+
 git clone https://github.com/shazisidedaizi/scanner
 
 cd scanner
 
 #下载依赖
+
 go mod tidy
 
 #编译生成可执行文件（优化 + 压缩）
+
 go build -ldflags="-s -w" -o proxy-scanner
 
 upx --best --lzma proxy-scanner
 
 #查看是否生成（约 2.5MB）
+
 ls -lh proxy-scanner
 
 ###  步骤 4：运行扫描（交互式输入
@@ -88,6 +95,7 @@ ls -lh proxy-scanner
 ###  步骤 6：查看实时进度
 
 #实时查看扫描进度（进度条）
+
 tail -f /dev/null  # 程序自带进度条，无需 tail
 #程序运行时会显示：
 
@@ -102,9 +110,11 @@ tail -f /dev/null  # 程序自带进度条，无需 tail
 ###  步骤 7：查看输出文件
 
 #有效代理（可直接使用）
+
 cat proxy_valid.txt
 
 #详细日志
+
 cat result_detail.txt
 
 
