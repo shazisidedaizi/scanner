@@ -45,7 +45,8 @@ source ~/.profile
 
 #验证安装
 
-go version          #输出应为：go version go1.21.5 linux/amd64
+go version
+        #输出应为：go version go1.21.5 linux/amd64
 
 ###  步骤 3：克隆项目并编译
 #克隆仓库
