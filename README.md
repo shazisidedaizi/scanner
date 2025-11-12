@@ -71,7 +71,7 @@ upx --best --lzma scanner
 
 #查看是否生成（约 2.5MB）
 
-ls -lh proxy-scanner
+ls -lh scanner
 
 ###  步骤 4：运行扫描（交互式输入
 
