@@ -83,7 +83,7 @@ ls -lh scanner
 
 命令行后台运行扫描（命令行参数，一键启动
 
-nohup ./scanner -ip-range 157.254.32.0-157.254.52.255 -port 1080 -threads 10000 -timeout 5s &
+nohup ./scanner -ip-range 157.254.32.0-157.254.52.255 -port 1080 -threads 10000 -timeout 5s > scan.log 2>&1 &
 
 #查看运行状态
 
