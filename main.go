@@ -23,7 +23,7 @@ import (
 
 	"github.com/cheggaaa/pb/v3"
 	"golang.org/x/net/proxy"
-	"golang.org/x/sys/unix"
+	// "golang.org/x/sys/unix"
 )
 
 // ==================== 配置与常量 ====================
