@@ -15,12 +15,12 @@
 | 输入端口 | `1080` / `80 8080` / `1-65535` |
 | 自动生成所有 `IP:PORT` | Done |
 | 异步测试 4 种协议 | Done |
-| **弱密码爆破（数百种常见密码）** | Done |
-| **输出 `scheme://user:pass@ip:port#CC`** | Done |
-| **实时进度条 + 日志 + 后台运行** | Done |
-| **国家代码（Country Code）查询** | Done |
-| **输出文件：`proxy_valid.txt`、`result_detail.txt`** | Done |
-| **无需 pip、Python、aiohttp** | Done |
+| 弱密码爆破 | Done |
+| 输出 `scheme://user:pass@ip:port#CC` | Done |
+| 实时进度条 + 日志 + 后台运行 | Done |
+| 国家代码（Country Code）查询 | Done |
+| 输出文件：`proxy_valid.txt`、`result_detail.txt` | Done |
+| 无需 pip、Python、aiohttp** | Done |
 
 ---
 
