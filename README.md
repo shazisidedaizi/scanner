@@ -85,16 +85,9 @@ ls -lh scanner
 
 请输入端口（默认: 1080）:
 
-同时支持命令行输入：
+也可以使用命令行运行扫描（命令行参数，一键启动
 
-./scanner -ip-range 157.254.32.1-157.254.32.10 -port 1080 -threads 1000
-###  步骤 5：运行扫描（命令行参数，一键启动
-
-./proxy-scanner \
-  -ip-range 157.254.32.0-157.254.52.255 \
-  -port 1080 \
-  -threads 10000 \
-  -timeout 6s
+./scanner \-ip-range 157.254.32.0-157.254.52.255 \-port 1080 \-threads 10000 \-timeout 6s
 
 ###  步骤 6：查看实时进度
 
