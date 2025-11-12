@@ -57,8 +57,6 @@ cd scanner
 
 #初始化 Go 模块并下载依赖（自动处理所有包）
 
-go mod init github.com/shazisidedaizi/scanner
-
 go mod tidy
 
 #编译生成可执行文件（优化 + 压缩）
