@@ -90,9 +90,13 @@ ls -lh proxy-scanner
 # 实时查看扫描进度（进度条）
 tail -f /dev/null  # 程序自带进度条，无需 tail
 #程序运行时会显示：
+
 [*] IPs: 5120, Ports: 1, Total: 5120
+
 [*] Threads: 10000, Timeout: 6s
+
 5120/5120 [==========] 100% 12s
+
 [+] 完成！发现 23 个代理 → proxy_valid.txt
 
 ###  步骤 7：查看输出文件
