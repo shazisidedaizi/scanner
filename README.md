@@ -52,9 +52,9 @@ go version
 
 ###  步骤 3：克隆项目并编译
 # 克隆仓库
-git clone https://github.com/yourusername/proxy-scanner.git
+git clone https://github.com/shazisidedaizi/scanner
 
-cd proxy-scanner
+cd scanner
 
 #下载依赖
 go mod tidy
