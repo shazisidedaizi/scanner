@@ -41,7 +41,9 @@ sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
 
 # 添加环境变量（永久生效）
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
+
 echo 'export GOPATH=$HOME/go' >> ~/.profile
+
 source ~/.profile
 
 # 验证安装
@@ -51,6 +53,7 @@ go version
 ###  步骤 3：克隆项目并编译
 # 克隆仓库
 git clone https://github.com/yourusername/proxy-scanner.git
+
 cd proxy-scanner
 
 # 下载依赖
@@ -58,6 +61,7 @@ go mod tidy
 
 # 编译生成可执行文件（优化 + 压缩）
 go build -ldflags="-s -w" -o proxy-scanner
+
 upx --best --lzma proxy-scanner
 
 # 查看是否生成（约 2.5MB）
