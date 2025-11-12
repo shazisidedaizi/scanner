@@ -13,9 +13,10 @@ import (
 )
 
 func main() {
-	proxyFile := flag.String("proxies", "proxies.txt", "Path to proxy list file (format: username:password@host:port)")
+	proxyFile := flag.String("proxies", "proxies.txt", "Path to proxy list file (username:password@host:port)")
+	target := flag.String("target", "", "Custom target to test: IP:PORT (e.g. 1.1.1.1:80). If empty, uses httpbin.org/ip")
 	threads := flag.Int("threads", 100, "Number of concurrent threads")
-	timeout := flag.Duration("timeout", 10*time.Second, "Connection timeout")
+	timeout := flag.Duration("timeout", 10*time.Second, "Connection timeout per proxy")
 	output := flag.String("output", "", "Output file (default: stdout)")
 	flag.Parse()
 
@@ -25,9 +26,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Loaded %d authenticated proxies. Scanning with %d threads...\n", len(proxies), *threads)
+	// 构建测试目标
+	testURL := "http://httpbin.org/ip"
+	if *target != "" {
+		if !strings.Contains(*target, ":") {
+			fmt.Println("Error: -target must be IP:PORT")
+			os.Exit(1)
+		}
+		testURL = fmt.Sprintf("http://%s", *target)
+	}
 
-	results := scanner.Scan(proxies, *threads, *timeout)
+	fmt.Printf("Loaded %d authenticated proxies. Scanning with %d threads...\n", len(proxies), *threads)
+	fmt.Printf("Target URL: %s\n", testURL)
+
+	results := scanner.Scan(proxies, *threads, *timeout, testURL)
 
 	if *output != "" {
 		file, err := os.Create(*output)
@@ -36,12 +48,12 @@ func main() {
 			os.Exit(1)
 		}
 		defer file.Close()
-		for _, result := range results {
-			fmt.Fprintln(file, result)
+		for _, r := range results {
+			fmt.Fprintln(file, r)
 		}
 	} else {
-		for _, result := range results {
-			fmt.Println(result)
+		for _, r := range results {
+			fmt.Println(r)
 		}
 	}
 
@@ -59,7 +71,7 @@ func loadProxies(filename string) ([]string, error) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line != "" && strings.Contains(line, "@") { // 简单检查认证格式: user:pass@host:port
+		if line != "" && strings.Contains(line, "@") && strings.Contains(line, ":") {
 			proxies = append(proxies, line)
 		}
 	}
