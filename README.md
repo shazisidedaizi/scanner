@@ -24,11 +24,9 @@
 
 ---
 
-## 在 Ubuntu/Debian 上运行（完整流程）
 
 ### 步骤 1：更新系统 & 安装依赖
 
-```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y git curl wget build-essential upx-ucl
 
