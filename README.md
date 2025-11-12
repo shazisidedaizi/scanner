@@ -15,7 +15,6 @@
 | 实时进度条 + 日志 + 后台运行 | Done |
 | 国家代码（Country Code）查询 | Done |
 | 输出文件：`proxy_valid.txt`、`result_detail.txt` | Done |
-| 无需 pip、Python、aiohttp** | Done |
 
 ---
 
@@ -56,11 +55,9 @@ git clone https://github.com/shazisidedaizi/scanner
 
 cd scanner
 
-#下载依赖
+#初始化 Go 模块并下载依赖（自动处理所有包）
 
-go get github.com/cheggaaa/pb/v3
-
-go get golang.org/x/sys/unix  
+go mod init github.com/shazisidedaizi/scanner
 
 go mod tidy
 
@@ -86,11 +83,23 @@ ls -lh scanner
 
 请输入端口（默认: 1080）:
 
-也可以使用命令行运行扫描（命令行参数，一键启动
+命令行后台运行扫描（命令行参数，一键启动
 
-./scanner \-ip-range 157.254.32.0-157.254.52.255 \-port 1080 \-threads 10000 \-timeout 6s
+./scanner -ip-range 157.254.32.0-157.254.52.255 -port 1080 -threads 10000 -timeout 6s &
 
-###  步骤 6：查看实时进度
+#查看运行状态
+
+ps aux | grep scanner
+
+#查看实时日志
+
+tail -f scan.log
+
+#安全停止
+
+pkill scanner
+
+###  步骤 5：查看实时进度
 
 #实时查看扫描进度（进度条）
 
@@ -106,7 +115,7 @@ tail -f /dev/null     # 程序自带进度条，无需 tail
 
 [+] 完成！发现 23 个代理 → proxy_valid.txt
 
-###  步骤 7：查看输出文件
+###  步骤 6：查看输出文件
 
 #有效代理（可直接使用）
 
