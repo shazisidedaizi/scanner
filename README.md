@@ -75,7 +75,7 @@ ls -lh scanner
 
 ###  步骤 4：运行扫描（交互式输入
 
-./proxy-scanner
+./scanner
 
 程序会提示输入：
 请输入起始 IP（默认: 157.254.32.0）:
