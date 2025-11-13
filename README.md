@@ -46,7 +46,7 @@ source ~/.profile
 
 go version
 
-#输出应为：go version go1.24.10 linux/amd64
+#输出应为：go version go1.24.9 linux/amd64
 
 ###  步骤 3：克隆项目并编译
 #克隆仓库
