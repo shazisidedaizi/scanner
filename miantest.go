@@ -91,7 +91,13 @@ type Result struct {
 	IsWeak   bool
 }
 
-// ==================== 主函数 ====================
+// ==================== 任务结构 ====================
+type scanTask struct {
+	IP   string
+	Port int
+}
+
+// ==================== 主函数（完全替换）================
 func main() {
 	// ==================== 命令行参数 ====================
 	ipRange := flag.String("ip-range", "", "IP range: 192.168.1.1-192.168.1.255 or CIDR")
@@ -130,7 +136,6 @@ func main() {
 	var finalIPRange, finalPortInput, finalURL string
 	var finalThreads int
 	var finalTimeout time.Duration
-	var addrs []string
 
 	// ==================== 命令行参数优先 ====================
 	finalURL = *urlInput
@@ -147,72 +152,6 @@ func main() {
 		finalTimeout = *timeout
 	}
 
-	// ==================== URL 优先加载 ====================
-	if finalURL != "" {
-		fmt.Printf("[*] 正在从 URL 加载代理列表: %s\n", finalURL)
-		addrsTmp, err := fetchAddrsFromURL(finalURL, defaultTimeout)
-		if err != nil || len(addrsTmp) == 0 {
-			log.Printf("URL 加载失败或为空 → 回退到交互式输入 IP 和端口")
-		} else {
-			addrs = addrsTmp
-		}
-	}
-
-	// ==================== 回退交互式输入 IP ====================
-	if len(addrs) == 0 {
-		if finalIPRange == "" {
-			finalIPRange = promptIPRange(defaultStart, defaultEnd)
-		}
-		ipsChan, _ := ipGenerator(finalIPRange)
-		for ip := range ipsChan {
-			addrs = append(addrs, ip)
-		}
-	}
-
-	// ==================== 回退交互式输入端口 ====================
-	needPortInput := false
-	for _, a := range addrs {
-		if _, _, err := net.SplitHostPort(a); err != nil {
-			needPortInput = true
-			break
-		}
-	}
-	if needPortInput {
-		if finalPortInput == "" {
-			finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
-		}
-		ports, _ := parsePorts(finalPortInput)
-		var newAddrs []string
-		for _, a := range addrs {
-			if _, _, err := net.SplitHostPort(a); err != nil {
-				for _, p := range ports {
-					newAddrs = append(newAddrs, fmt.Sprintf("%s:%d", a, p))
-				}
-			} else {
-				newAddrs = append(newAddrs, a)
-			}
-		}
-		addrs = newAddrs
-	} else if finalPortInput == "" {
-		// URL 已包含端口，自动提取用于显示
-		portsSet := make(map[string]bool)
-		for _, addr := range addrs {
-			if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
-				portsSet[port] = true
-			}
-		}
-		if len(portsSet) > 0 {
-			ports := make([]string, 0, len(portsSet))
-			for p := range portsSet {
-				ports = append(ports, p)
-			}
-			sort.Strings(ports)
-			finalPortInput = strings.Join(ports, ",")
-		} else {
-			finalPortInput = defaultPort
-		}
-	}
-
 	// ==================== 回退其他参数 ====================
 	if finalThreads == 0 {
 		finalThreads = promptInt("最大并发数（默认: "+strconv.Itoa(defaultThreads)+"):", defaultThreads)
@@ -224,7 +163,7 @@ func main() {
 	// ==================== 加载弱密码 ====================
 	weakPasswords = loadWeakPasswords("weak_passwords.txt")
 
-	// ==================== 初始化输出文件（赋值给全局） ====================
+	// ==================== 初始化输出文件 ====================
 	detailFile, err = os.OpenFile("result_detail.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		log.Fatal("打开 result_detail.txt 失败: ", err)
@@ -233,29 +172,15 @@ func main() {
 	if err != nil {
 		log.Fatal("打开 proxy_valid.txt 失败: ", err)
 	}
-	// 必须 defer，防止 panic 泄露
 	defer detailFile.Close()
 	defer validFile.Close()
 
-	log.Printf("[*] 正在从 URL 加载代理列表: %s", finalURL)
-
 	// ==================== 输出配置摘要 ====================
-	if finalURL != "" && len(addrs) > 0 {
-		log.Printf("[*] 地址来源: URL 加载（共 %d 条）", len(addrs))
-	} else {
-		log.Printf("[*] 扫描范围: %s", finalIPRange)
-	}
-	log.Printf("[*] 端口配置: %s", finalPortInput)
 	log.Printf("[*] 最大并发: %d", finalThreads)
 	log.Printf("[*] 超时时间: %v", finalTimeout)
 
-	// ==================== 扫描准备 ====================
-	total := len(addrs)
-	if total == 0 {
-		log.Fatal("未获取到任何 IP:port，程序退出")
-	}
-	bar := pb.StartNew(total)
-	bar.SetWriter(multiWriter)
+	// ==================== 任务通道 + 上下文 ====================
+	taskChan := make(chan scanTask, finalThreads*2) // 缓冲避免阻塞
 	ctx, cancel := context.WithCancel(context.Background())
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -265,31 +190,88 @@ func main() {
 		cancel()
 	}()
 
-	// ==================== 扫描主逻辑 ====================
+	// ==================== 进度条（动态总数）================
+	bar := pb.New(0)
+	bar.SetWriter(multiWriter)
+	bar.Set("prefix", "Scanning ")
+	bar.Start()
+
+	// ==================== 启动任务生成器（生产者）================
+	go func() {
+		defer close(taskChan)
+
+		// --- 1. URL 模式：流式解析 ---
+		if finalURL != "" {
+			ips, ports, err := fetchAddrsFromURLStream(finalURL, defaultTimeout)
+			if err != nil {
+				log.Printf("URL 加载失败 → 回退交互输入: %v", err)
+			} else {
+				for _, ip := range ips {
+					for _, port := range ports {
+						select {
+						case taskChan <- scanTask{IP: ip, Port: port}:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
+				return
+			}
+		}
+
+		// --- 2. IP 范围模式 ---
+		if finalIPRange == "" {
+			finalIPRange = promptIPRange(defaultStart, defaultEnd)
+		}
+		ipChan, err := ipGenerator(finalIPRange)
+		if err != nil {
+			log.Printf("IP 范围解析失败: %v", err)
+			return
+		}
+
+		// --- 3. 端口解析 ---
+		if finalPortInput == "" {
+			finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+		}
+		ports, _ := parsePorts(finalPortInput)
+
+		// --- 4. 流式组合 IP × 端口 ---
+		for ip := range ipChan {
+			for _, port := range ports {
+				select {
+				case taskChan <- scanTask{IP: ip, Port: port}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	// ==================== 扫描主逻辑（消费者）================
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, finalThreads)
-	for _, addr := range addrs {
+	totalScanned := int64(0)
+
+	for task := range taskChan {
+		// 动态更新进度条总数
+		current := atomic.AddInt64(&totalScanned, 1)
+		if current%1000 == 1 || current == 1 {
+			bar.Total = float64(current + 1000) // 预估，避免频繁更新
+		}
+
 		wg.Add(1)
-		sem <- struct{}{} // 获取令牌
-		go func(a string) {
+		sem <- struct{}{}
+		go func(t scanTask) {
 			defer wg.Done()
 			defer func() { <-sem }()
+
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
-			ip, portStr, ok := strings.Cut(a, ":")
-			if !ok {
-    			bar.Increment()
-   			 	return
-			}
-			port, err := strconv.Atoi(portStr)
-		if err != nil || port <= 0 || port > 65535 {
-    		bar.Increment()
-    		return
-		}
-			result := scanProxy(ctx, ip, port, finalTimeout)
+
+			result := scanProxy(ctx, t.IP, t.Port, finalTimeout)
 			if result.Scheme != "" {
 				key := fmt.Sprintf("%s:%d", result.IP, result.Port)
 				if _, loaded := seenProxies.LoadOrStore(key, true); !loaded {
@@ -298,78 +280,71 @@ func main() {
 				}
 			}
 			bar.Increment()
-		}(addr)
+		}(task)
 	}
+
 	wg.Wait()
 	bar.Finish()
 	log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", atomic.LoadInt64(&validCount))
 }
 
-// ==================== 从 URL 加载 IP:PORT（完整调试 + 修复版）================
-func fetchAddrsFromURL(u string, timeout time.Duration) ([]string, error) {
-	log.Printf("[*] 正在从 URL 加载地址: %s (timeout: %v)", u, timeout)
+// ==================== 从 URL 流式加载 IP:PORT ====================
+func fetchAddrsFromURLStream(u string, timeout time.Duration) ([]string, []int, error) {
+	log.Printf("[*] 正在从 URL 流式加载代理列表: %s", u)
 	client := &http.Client{
-		Timeout: timeout,
-		// 防止重定向导致 resp == nil
+		Timeout:       timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 	resp, err := client.Get(u)
 	if err != nil {
-		log.Printf("[x] HTTP 请求失败: %v", err)
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[x] HTTP 状态码错误: %d", resp.StatusCode)
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("[x] 读取响应体失败: %v", err)
-		return nil, err
-	}
-	// ---- 关键调试：打印原始内容 ----
-	log.Printf("[DEBUG] 原始响应体（%d 字节）:\n%s", len(body), string(body))
-	var addrs []string
-	lines := strings.Split(string(body), "\n")
-	log.Printf("[DEBUG] 按 \\n 拆分得到 %d 行", len(lines))
-	for i, rawLine := range lines {
-		line := strings.TrimSpace(rawLine)
-		log.Printf("[DEBUG] 行 %d 原始: %q", i+1, rawLine)
-		log.Printf("[DEBUG] 行 %d Trim 后: %q", i+1, line)
+
+	scanner := bufio.NewScanner(resp.Body)
+	var ips []string
+	portSet := make(map[int]bool)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.Contains(line, ":") {
-			log.Printf("[DEBUG] 行 %d 跳过：空或无冒号", i+1)
 			continue
 		}
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) != 2 {
-			log.Printf("[DEBUG] 行 %d Split 失败: %v", i+1, parts)
 			continue
 		}
-		ip := strings.TrimSpace(parts[0])
+		ipStr := strings.TrimSpace(parts[0])
 		portStr := strings.TrimSpace(parts[1])
-		log.Printf("[DEBUG] 行 %d IP: %q, PortStr: %q", i+1, ip, portStr)
 		port, err := strconv.Atoi(portStr)
-		if err != nil {
-			log.Printf("[DEBUG] 行 %d Atoi 失败: %v", i+1, err)
+		if err != nil || port <= 0 || port > 65535 {
 			continue
 		}
-		if port <= 0 || port > 65535 {
-			log.Printf("[DEBUG] 行 %d 端口范围错误: %d", i+1, port)
+		if net.ParseIP(ipStr) == nil {
 			continue
 		}
-		if net.ParseIP(ip) == nil {
-			log.Printf("[DEBUG] 行 %d IP 无效: %s", i+1, ip)
-			continue
-		}
-		addr := fmt.Sprintf("%s:%d", ip, port)
-		addrs = append(addrs, addr)
-		log.Printf("[DEBUG] 行 %d 解析成功: %s", i+1, addr)
+		ips = append(ips, ipStr)
+		portSet[port] = true
 	}
-	log.Printf("[*] 从 URL 成功加载 %d 个有效地址", len(addrs))
-	return addrs, nil
+
+	var ports []int
+	for p := range portSet {
+		ports = append(ports, p)
+	}
+	sort.Ints(ports)
+
+	if err := scanner.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	log.Printf("[*] URL 加载完成: %d 个 IP, %d 个端口", len(ips), len(ports))
+	return ips, ports, nil
 }
 
 // ==================== 交互输入 ====================
