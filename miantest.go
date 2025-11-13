@@ -174,23 +174,42 @@ func main() {
 
 	go func() {
 		defer close(taskChan)
-		if finalURL != "" {
-			ips, ports, err := fetchAddrsFromURLStream(finalURL, defaultTimeout)
-			if err != nil {
-				log.Printf("URL 加载失败 → 回退交互输入: %v", err)
-			} else {
-				for _, ip := range ips {
-					for _, port := range ports {
-						select {
-						case taskChan <- scanTask{IP: ip, Port: port}:
-						case <-ctx.Done():
-							return
-						}
-					}
-				}
-				return
-			}
-		}
+		// 在 URL 加载后
+	if finalURL != "" {
+    	ips, portsFromURL, err := fetchAddrsFromURLStream(...)
+    	if err != nil {
+        	log.Printf("URL 加载失败 → 回退交互输入: %v", err)
+    	} else {
+        	// 如果 URL 没带端口，询问用户
+        	if len(portsFromURL) == 0 {
+            	if finalPortInput == "" {
+                	finalPortInput = prompt("URL 未包含端口，请输入端口（默认: 1080）: ", "1080")
+            	}
+            	ports, _ := parsePorts(finalPortInput)
+            	for _, ip := range ips {
+                	for _, p := range ports {
+                    	select {
+                    	case taskChan <- scanTask{IP: ip, Port: p}:
+                    	case <-ctx.Done():
+                        	return
+                    	}
+                	}
+            	}
+        	} else {
+            	// URL 自带端口
+            	for _, ip := range ips {
+                	for _, p := range portsFromURL {
+                    	select {
+                    	case taskChan <- scanTask{IP: ip, Port: p}:
+                    	case <-ctx.Done():
+                        	return
+                    	}
+                	}
+            	}
+        	}
+        	return
+    	}
+	}
 
 		if finalIPRange == "" {
 			finalIPRange = promptIPRange(defaultStart, defaultEnd)
@@ -224,7 +243,7 @@ func main() {
 	for task := range taskChan {
 		current := atomic.AddInt64(&totalScanned, 1)
 		if current%1000 == 1 || current == 1 {
-			bar.Total = float64(current + 1000)
+			bar.Total = float64(current + 3000)
 		}
 
 		wg.Add(1)
@@ -516,14 +535,28 @@ func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Aut
 
 	switch scheme {
 	case "http":
-		// 使用 HTTP 代理（通过 Transport.Proxy）
-		u := &url.URL{Scheme: "http", Host: addr}
-		if auth != nil {
-			u.User = url.UserPassword(auth.User, auth.Password)
-		}
-		transport := &http.Transport{
-			Proxy: http.ProxyURL(u),
-			// 默认使用系统 dialer, but set idle/timeouts via client
+    var dialer proxy.Dialer = proxy.Direct
+    var err error
+    if auth != nil {
+        u := &url.URL{
+            Scheme: "http",
+            Host:   addr,
+            User:   url.UserPassword(auth.User, auth.Password),
+        }
+        dialer, err = proxy.FromURL(u, proxy.Direct)
+        if err != nil {
+            return false, 0, ""
+        }
+    } else {
+        u := &url.URL{Scheme: "http", Host: addr}
+        dialer, err = proxy.FromURL(u, proxy.Direct)
+        if err != nil {
+            return false, 0, ""
+        }
+    }
+    dialContext := dialerToDialContext(dialer)
+    transport := &http.Transport{DialContext: dialContext}
+	// 默认使用系统 dialer, but set idle/timeouts via client
 			DialContext: (&net.Dialer{Timeout: timeout}).DialContext,
 		}
 		client := &http.Client{Transport: transport, Timeout: timeout}
@@ -597,7 +630,7 @@ func dialerToDialContext(d proxy.Dialer) func(ctx context.Context, network, addr
 // SOCKS4 手动实现（返回 DialContext 形式）
 func socks4Dialer(proxyAddr string, auth *proxy.Auth) func(ctx context.Context, network, target string) (net.Conn, error) {
 	return func(ctx context.Context, network, target string) (net.Conn, error) {
-		d := net.Dialer{Timeout: 5 * time.Second}
+		d := net.Dialer{Timeout: timeout / 2}
 		conn, err := d.DialContext(ctx, "tcp", proxyAddr)
 		if err != nil {
 			return nil, err
