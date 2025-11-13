@@ -174,42 +174,40 @@ func main() {
 
 	go func() {
 		defer close(taskChan)
-		// 在 URL 加载后
-	if finalURL != "" {
-    	ips, portsFromURL, err := fetchAddrsFromURLStream(...)
-    	if err != nil {
-        	log.Printf("URL 加载失败 → 回退交互输入: %v", err)
-    	} else {
-        	// 如果 URL 没带端口，询问用户
-        	if len(portsFromURL) == 0 {
-            	if finalPortInput == "" {
-                	finalPortInput = prompt("URL 未包含端口，请输入端口（默认: 1080）: ", "1080")
-            	}
-            	ports, _ := parsePorts(finalPortInput)
-            	for _, ip := range ips {
-                	for _, p := range ports {
-                    	select {
-                    	case taskChan <- scanTask{IP: ip, Port: p}:
-                    	case <-ctx.Done():
-                        	return
-                    	}
-                	}
-            	}
-        	} else {
-            	// URL 自带端口
-            	for _, ip := range ips {
-                	for _, p := range portsFromURL {
-                    	select {
-                    	case taskChan <- scanTask{IP: ip, Port: p}:
-                    	case <-ctx.Done():
-                        	return
-                    	}
-                	}
-            	}
-        	}
-        	return
-    	}
-	}
+		// URL 加载优先
+		if finalURL != "" {
+			ips, portsFromURL, err := fetchAddrsFromURLStream(finalURL, finalTimeout)
+			if err != nil {
+				log.Printf("URL 加载失败 → 回退交互输入: %v", err)
+			} else {
+				if len(portsFromURL) == 0 {
+					if finalPortInput == "" {
+						finalPortInput = prompt("URL 未包含端口，请输入端口（默认: 1080）: ", "1080")
+					}
+					ports, _ := parsePorts(finalPortInput)
+					for _, ip := range ips {
+						for _, p := range ports {
+							select {
+							case taskChan <- scanTask{IP: ip, Port: p}:
+							case <-ctx.Done():
+								return
+							}
+						}
+					}
+				} else {
+					for _, ip := range ips {
+						for _, p := range portsFromURL {
+							select {
+							case taskChan <- scanTask{IP: ip, Port: p}:
+							case <-ctx.Done():
+								return
+							}
+						}
+					}
+				}
+				return
+			}
+		}
 
 		if finalIPRange == "" {
 			finalIPRange = promptIPRange(defaultStart, defaultEnd)
@@ -242,10 +240,6 @@ func main() {
 
 	for task := range taskChan {
 		current := atomic.AddInt64(&totalScanned, 1)
-		if current%1000 == 1 || current == 1 {
-			bar.Total = float64(current + 3000)
-		}
-
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(t scanTask) {
@@ -474,7 +468,6 @@ func compareIP(a, b net.IP) int {
 
 // ==================== 主扫描逻辑 ====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
-	// 端口快速连通性检测
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), timeout/2)
 	if err != nil {
 		return Result{}
@@ -486,7 +479,6 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 		if ctx.Err() != nil {
 			return result
 		}
-		// 1. 匿名测试
 		ok, lat, exportIP := testProxy(ctx, scheme, ip, port, nil, timeout)
 		if ok && isPublicIP(exportIP) {
 			result.Scheme = scheme
@@ -498,7 +490,6 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			}
 			return result
 		}
-		// 2. 弱密码爆破（仅 HTTP/SOCKS5）
 		if scheme == "socks4" {
 			continue
 		}
@@ -531,202 +522,88 @@ func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Aut
 		return false, 0, ""
 	}
 	addr := fmt.Sprintf("%s:%d", ip, port)
-	testURL := "http://ifconfig.me" // 可按需替换
+	testURL := "http://ifconfig.me"
 
 	switch scheme {
 	case "http":
-    var dialer proxy.Dialer = proxy.Direct
-    var err error
-    if auth != nil {
-        u := &url.URL{
-            Scheme: "http",
-            Host:   addr,
-            User:   url.UserPassword(auth.User, auth.Password),
-        }
-        dialer, err = proxy.FromURL(u, proxy.Direct)
-        if err != nil {
-            return false, 0, ""
-        }
-    } else {
-        u := &url.URL{Scheme: "http", Host: addr}
-        dialer, err = proxy.FromURL(u, proxy.Direct)
-        if err != nil {
-            return false, 0, ""
-        }
-    }
-    dialContext := dialerToDialContext(dialer)
-    transport := &http.Transport{DialContext: dialContext}
-	// 默认使用系统 dialer, but set idle/timeouts via client
-			DialContext: (&net.Dialer{Timeout: timeout}).DialContext,
+		client := &http.Client{Timeout: timeout}
+		if auth != nil {
+			proxyURL, _ := url.Parse(fmt.Sprintf("http://%s:%s@%s:%d", auth.User, auth.Password, ip, port))
+			client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+		} else {
+			proxyURL, _ := url.Parse(fmt.Sprintf("http://%s:%d", ip, port))
+			client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
 		}
-		client := &http.Client{Transport: transport, Timeout: timeout}
 		start := time.Now()
-		req, _ := http.NewRequestWithContext(ctx, "GET", testURL, nil)
-		resp, err := client.Do(req)
-		if err != nil || resp == nil {
-			return false, 0, ""
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		exportIP := strings.TrimSpace(string(body))
-		latency := int(time.Since(start).Milliseconds())
-		return resp.StatusCode == 200, latency, exportIP
-
-	case "socks5":
-		d, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
+		resp, err := client.Get(testURL)
 		if err != nil {
 			return false, 0, ""
 		}
-		dialContext := dialerToDialContext(d)
-		transport := &http.Transport{
-			DialContext: dialContext,
-		}
-		client := &http.Client{Transport: transport, Timeout: timeout}
-		start := time.Now()
-		req, _ := http.NewRequestWithContext(ctx, "GET", testURL, nil)
-		resp, err := client.Do(req)
-		if err != nil || resp == nil {
-			return false, 0, ""
-		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
-		exportIP := strings.TrimSpace(string(body))
-		latency := int(time.Since(start).Milliseconds())
-		return resp.StatusCode == 200, latency, exportIP
-
+		return true, int(time.Since(start).Milliseconds()), strings.TrimSpace(string(body))
+	case "socks5":
+		var d proxy.Dialer = proxy.Direct
+		if auth != nil {
+			dialURL := fmt.Sprintf("%s:%s@%s:%d", auth.User, auth.Password, ip, port)
+			socks5URL, _ := url.Parse("socks5://" + dialURL)
+			d, _ = proxy.FromURL(socks5URL, proxy.Direct)
+		} else {
+			socks5URL, _ := url.Parse(fmt.Sprintf("socks5://%s:%d", ip, port))
+			d, _ = proxy.FromURL(socks5URL, proxy.Direct)
+		}
+		start := time.Now()
+		conn, err := d.Dial("tcp", "ifconfig.me:80")
+		if err != nil {
+			return false, 0, ""
+		}
+		conn.Close()
+		return true, int(time.Since(start).Milliseconds()), ip
 	case "socks4":
-		dialContext := socks4Dialer(addr, auth)
-		transport := &http.Transport{
-			DialContext: dialContext,
-		}
-		client := &http.Client{Transport: transport, Timeout: timeout}
 		start := time.Now()
-		req, _ := http.NewRequestWithContext(ctx, "GET", testURL, nil)
-		resp, err := client.Do(req)
-		if err != nil || resp == nil {
+		conn, err := net.DialTimeout("tcp", addr, timeout)
+		if err != nil {
 			return false, 0, ""
 		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		exportIP := strings.TrimSpace(string(body))
-		latency := int(time.Since(start).Milliseconds())
-		return resp.StatusCode == 200, latency, exportIP
+		conn.Close()
+		return true, int(time.Since(start).Milliseconds()), ip
 	default:
 		return false, 0, ""
 	}
 }
 
-// 把 proxy.Dialer 包装成 DialContext
-func dialerToDialContext(d proxy.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		conn, err := d.Dial(network, addr)
-		if err != nil {
-			return nil, fmt.Errorf("proxy dial failed: %w", err)
-		}
-		return conn, nil
-	}
-}
-
-// SOCKS4 手动实现（返回 DialContext 形式）
-func socks4Dialer(proxyAddr string, auth *proxy.Auth) func(ctx context.Context, network, target string) (net.Conn, error) {
-	return func(ctx context.Context, network, target string) (net.Conn, error) {
-		d := net.Dialer{Timeout: timeout / 2}
-		conn, err := d.DialContext(ctx, "tcp", proxyAddr)
-		if err != nil {
-			return nil, err
-		}
-		ip, portStr, _ := net.SplitHostPort(target)
-		port, _ := strconv.Atoi(portStr)
-		ipObj := net.ParseIP(ip)
-		if ipObj == nil {
-			conn.Close()
-			return nil, fmt.Errorf("socks4 does not support domain names")
-		}
-		ipBytes := ipObj.To4()
-		if ipBytes == nil {
-			conn.Close()
-			return nil, fmt.Errorf("socks4 requires IPv4")
-		}
-		// 构建请求：VN(4), CD(1=CONNECT), DSTPORT(2), DSTIP(4), USERID(NUL)
-		req := []byte{4, 1, byte(port >> 8), byte(port), ipBytes[0], ipBytes[1], ipBytes[2], ipBytes[3]}
-		if auth != nil && auth.User != "" {
-			req = append(req, []byte(auth.User)...)
-			req = append(req, 0) // 单个 NUL 结束 userid
-		} else {
-			req = append(req, 0) // 空 userid -> single NUL
-		}
-		if _, err := conn.Write(req); err != nil {
-			conn.Close()
-			return nil, err
-		}
-		resp := make([]byte, 8)
-		if _, err := io.ReadFull(conn, resp); err != nil {
-			conn.Close()
-			return nil, err
-		}
-		if resp[0] != 0 || resp[1] != 90 {
-			conn.Close()
-			return nil, fmt.Errorf("socks4 rejected: %d", resp[1])
-		}
-		return conn, nil
-	}
+// ==================== 结果保存 ====================
+func writeResult(r Result) {
+	detailMu.Lock()
+	defer detailMu.Unlock()
+	fmt.Fprintf(detailFile, "%+v\n", r)
+	validMu.Lock()
+	defer validMu.Unlock()
+	fmt.Fprintf(validFile, "%s://%s:%d\n", r.Scheme, r.IP, r.Port)
 }
 
 // ==================== 公网 IP 判断 ====================
-func isPublicIP(s string) bool {
-	ip := net.ParseIP(strings.TrimSpace(s))
+func isPublicIP(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
 	if ip == nil {
 		return false
 	}
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+	ip4 := ip.To4()
+	if ip4 == nil {
 		return false
 	}
-	if ip4 := ip.To4(); ip4 != nil {
-		return !(ip4[0] == 10 ||
-			(ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31) ||
-			(ip4[0] == 192 && ip4[1] == 168))
+	if ip4[0] == 10 || (ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31) ||
+		(ip4[0] == 192 && ip4[1] == 168) || (ip4[0] == 169 && ip4[1] == 254) {
+		return false
 	}
-	return false
+	return true
 }
 
-// ==================== 国家查询 ====================
+// ==================== 国家解析 ====================
 func getCountry(ip string) string {
 	if v, ok := countryCache.Load(ip); ok {
 		return v.(string)
 	}
-	client := &http.Client{Timeout: 3 * time.Second}
-	urls := []string{
-		"http://ip-api.com/json/" + ip + "?fields=countryCode",
-		"https://ipinfo.io/" + ip + "/country",
-	}
-	for _, u := range urls {
-		resp, err := client.Get(u)
-		if err != nil {
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			continue
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		code := ""
-		if strings.Contains(u, "json") {
-			var m map[string]interface{}
-			if json.Unmarshal(body, &m) == nil {
-				if c, ok := m["countryCode"].(string); ok {
-					code = strings.ToUpper(c)
-				}
-			}
-		} else {
-			code = strings.TrimSpace(strings.ToUpper(string(body)))
-		}
-		if regexp.MustCompile("^[A-Z]{2}$").MatchString(code) {
-			countryCache.Store(ip, code)
-			return code
-		}
-	}
-	countryCache.Store(ip, "XX")
 	return "XX"
 }
 func loadCountryCache() {
@@ -734,42 +611,9 @@ func loadCountryCache() {
 	if err != nil {
 		return
 	}
-	var m map[string]string
-	if json.Unmarshal(data, &m) == nil {
-		for k, v := range m {
-			countryCache.Store(k, v)
-		}
-	}
+	_ = json.Unmarshal(data, &countryCache)
 }
 func saveCountryCache() {
-	m := make(map[string]string)
-	countryCache.Range(func(k, v interface{}) bool {
-		m[k.(string)] = v.(string)
-		return true
-	})
-	data, _ := json.MarshalIndent(m, "", " ")
+	data, _ := json.Marshal(countryCache)
 	_ = os.WriteFile(countryCacheFile, data, 0644)
-}
-
-// ==================== 输出 ====================
-func writeResult(r Result) {
-	detailMu.Lock()
-	status := "OK"
-	if r.IsWeak {
-		status = "OK (Weak)"
-	}
-	line := fmt.Sprintf("%s:%d | %s | %s | %s | %dms | %s | %s",
-		r.IP, r.Port, r.Scheme, status, r.Country, r.Latency, r.ExportIP, r.Auth)
-	fmt.Fprintln(detailFile, line)
-	detailMu.Unlock()
-
-	validMu.Lock()
-	var fmtStr string
-	if r.Auth == "" {
-		fmtStr = fmt.Sprintf("%s://%s:%d#%s", r.Scheme, r.IP, r.Port, r.Country)
-	} else {
-		fmtStr = fmt.Sprintf("%s://%s@%s:%d#%s", r.Scheme, r.Auth, r.IP, r.Port, r.Country)
-	}
-	fmt.Fprintln(validFile, fmtStr)
-	validMu.Unlock()
 }
