@@ -32,7 +32,7 @@ wget https://go.dev/dl/go1.24.9.linux-amd64.tar.gz
 
 #解压到 /usr/local
 
-sudo tar -C /usr/local -xzf go1.24.10.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.24.9.linux-amd64.tar.gz
 
 #添加环境变量（永久生效）
 
