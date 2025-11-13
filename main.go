@@ -112,13 +112,6 @@ if *timeout > 0 {
 	finalTimeout = *timeout
 }
 
-// 默认值
-defaultStart := "157.254.32.0"
-defaultEnd := "157.254.52.255"
-defaultPort := "1080"
-defaultThreads := 1000
-defaultTimeout := 5 * time.Second
-
 // ==================== URL 优先加载 ====================
 var addrs []string
 var err error
