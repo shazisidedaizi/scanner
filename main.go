@@ -321,10 +321,6 @@ func fetchAddrsFromURL(u string, timeout time.Duration) ([]string, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp == nil {
-		log.Printf("[x] 响应对象为 nil")
-		return nil, fmt.Errorf("nil response")
-	}
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[x] HTTP 状态码错误: %d", resp.StatusCode)
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
@@ -587,9 +583,7 @@ func dialerToDialContext(d proxy.Dialer) func(ctx context.Context, network, addr
 		// proxy.Dialer 的接口是 Dial(network, addr string) (net.Conn, error)
 		conn, err := d.Dial(network, addr)
 		if err != nil {
-			// 作为后备，尝试使用 net.Dialer（respect ctx）
-			var nd net.Dialer
-			return nd.DialContext(ctx, network, addr)
+			return nil, fmt.Errorf("proxy dial failed: %w", err)
 		}
 		return conn, nil
 	}
