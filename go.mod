@@ -1,6 +1,6 @@
 module github.com/shazisidedaizi/scanner
 
-go 1.21
+go 1.24
 
 require (
     github.com/cheggaaa/pb/v3 v3.1.5
