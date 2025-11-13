@@ -130,17 +130,26 @@ func main() {
 	fmt.Printf("\n[*] 扫描范围: %s\n", finalIPRange)
 	fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
 
+	// 如果提供了 URL，就直接从 URL 获取 addrs，不再交互式输入 IP
 	if finalURL != "" {
 		fmt.Printf("[*] 正在从 URL 加载代理列表: %s\n", finalURL)
 		addrs, err = fetchAddrsFromURL(finalURL, finalTimeout)
-		if err != nil {
-			log.Printf("URL 加载失败: %v → 回退到 IP 范围扫描", err)
-		} else if len(addrs) == 0 {
-			log.Printf("URL 返回内容为空或无有效 IP:PORT → 回退到 IP 范围")
+		if err != nil || len(addrs) == 0 {
+			log.Printf("URL 加载失败或为空 → 回退到 IP 范围扫描")
+			if *ipRange == "" {
+				finalIPRange = promptIPRange(defaultStart, defaultEnd)
+			} else {
+				finalIPRange = *ipRange
+			}
+		}
+	} else {
+		if *ipRange == "" {
+			finalIPRange = promptIPRange(defaultStart, defaultEnd)
 		} else {
-			log.Printf("成功加载 %d 个代理地址", len(addrs))
+			finalIPRange = *ipRange
 		}
 	}
+
 
 	fmt.Printf("[*] 最大并发: %d\n", finalThreads)
 	fmt.Printf("[*] 超时时间: %v\n\n", finalTimeout)
