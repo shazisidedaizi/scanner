@@ -92,37 +92,6 @@ func main() {
 	defaultThreads := 1000
 	defaultTimeout := 5 * time.Second
 
-	// ==================== 交互式输入 ====================
-	var finalIPRange, finalPortInput, finalURL string
-	var finalThreads int
-	var finalTimeout time.Duration
-
-	if *ipRange == "" {
-		finalIPRange = promptIPRange(defaultStart, defaultEnd)
-	} else {
-		finalIPRange = *ipRange
-	}
-
-	if *portInput == "" {
-		finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
-	} else {
-		finalPortInput = *portInput
-	}
-
-	finalURL = *urlInput
-
-	if *threads <= 0 {
-		finalThreads = promptInt("最大并发数（默认: "+strconv.Itoa(defaultThreads)+"):", defaultThreads)
-	} else {
-		finalThreads = *threads
-	}
-
-	if *timeout <= 0 {
-		finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
-	} else {
-		finalTimeout = *timeout
-	}
-
 	// ==================== 配置摘要 ====================
 	var addrs []string
 	var err error
@@ -153,6 +122,37 @@ func main() {
 
 	fmt.Printf("[*] 最大并发: %d\n", finalThreads)
 	fmt.Printf("[*] 超时时间: %v\n\n", finalTimeout)
+
+	// ==================== 交互式输入 ====================
+	var finalIPRange, finalPortInput, finalURL string
+	var finalThreads int
+	var finalTimeout time.Duration
+
+	if *ipRange == "" {
+		finalIPRange = promptIPRange(defaultStart, defaultEnd)
+	} else {
+		finalIPRange = *ipRange
+	}
+
+	if *portInput == "" {
+		finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+	} else {
+		finalPortInput = *portInput
+	}
+
+	finalURL = *urlInput
+
+	if *threads <= 0 {
+		finalThreads = promptInt("最大并发数（默认: "+strconv.Itoa(defaultThreads)+"):", defaultThreads)
+	} else {
+		finalThreads = *threads
+	}
+
+	if *timeout <= 0 {
+		finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
+	} else {
+		finalTimeout = *timeout
+	}
 
 	// ==================== 加载弱密码 ====================
 	weakPasswords = loadWeakPasswords("weak_passwords.txt")
