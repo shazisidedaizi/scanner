@@ -38,6 +38,7 @@ sudo tar -C /usr/local -xzf go1.24.9.linux-amd64.tar.gz
 sed -i '/go\/bin/d' ~/.bashrc ~/.profile 2>/dev/null
 
 #添加环境变量到 .bashrc（优先级高于 /usr/bin）
+
 cat >> ~/.bashrc <<'EOF'
 export PATH=/usr/local/go/bin:$PATH
 export GOPATH=$HOME/go
