@@ -272,51 +272,90 @@ func main() {
 	log.Printf("[*] 扫描结束: %s", time.Now().Format("2006-01-02 15:04:05"))
 }
 
-// ==================== 从URL获取addr列表 ====================
-func fetchAddrsFromURL(u string, timeout time.Duration) ([]string, error) {  // ← 加 timeout 参数
-    log.Printf("[*] 正在从 URL 加载代理列表: %s (timeout: %v)", u, timeout)
+// ==================== 从 URL 加载 IP:PORT（完整调试 + 修复版）================
+func fetchAddrsFromURL(u string, timeout time.Duration) ([]string, error) {
+	log.Printf("[*] 正在从 URL 加载地址: %s (timeout: %v)", u, timeout)
 
-    client := &http.Client{
-        Timeout: timeout,  // ← 关键！防止卡死
-    }
-    resp, err := client.Get(u)
-    if err != nil {
-        log.Printf("[x] URL 请求失败: %v", err)
-        return nil, err
-    }
-    defer resp.Body.Close()
+	client := &http.Client{
+		Timeout: timeout,
+		// 防止重定向导致 resp == nil
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
-    if resp.StatusCode != http.StatusOK {
-        log.Printf("[x] HTTP 状态码错误: %d", resp.StatusCode)
-        return nil, fmt.Errorf("HTTP error: %d", resp.StatusCode)
-    }
+	resp, err := client.Get(u)
+	if err != nil {
+		log.Printf("[x] HTTP 请求失败: %v", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-    body, err := io.ReadAll(resp.Body)
-    if err != nil {
-        log.Printf("[x] 读取响应失败: %v", err)
-        return nil, err
-    }
+	if resp == nil {
+		log.Printf("[x] 响应对象为 nil")
+		return nil, fmt.Errorf("nil response")
+	}
 
-    var addrs []string
-    for _, line := range strings.Split(string(body), "\n") {
-        line = strings.TrimSpace(line)
-        if line == "" || !strings.Contains(line, ":") {
-            continue
-        }
-        parts := strings.SplitN(line, ":", 2)
-        ip := parts[0]
-        portStr := parts[1]
-        if net.ParseIP(ip) == nil {
-            continue
-        }
-        port, err := strconv.Atoi(portStr)
-        if err != nil || port <= 0 || port > 65535 {
-            continue
-        }
-        addrs = append(addrs, fmt.Sprintf("%s:%d", ip, port))
-    }
-    log.Printf("[*] 从 URL 成功加载 %d 个地址", len(addrs))
-    return addrs, nil
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[x] HTTP 状态码错误: %d", resp.StatusCode)
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[x] 读取响应体失败: %v", err)
+		return nil, err
+	}
+
+	// ---- 关键调试：打印原始内容 ----
+	log.Printf("[DEBUG] 原始响应体（%d 字节）:\n%s", len(body), string(body))
+
+	var addrs []string
+	lines := strings.Split(string(body), "\n")
+	log.Printf("[DEBUG] 按 \\n 拆分得到 %d 行", len(lines))
+
+	for i, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+
+		log.Printf("[DEBUG] 行 %d 原始: %q", i+1, rawLine)
+		log.Printf("[DEBUG] 行 %d Trim 后: %q", i+1, line)
+
+		if line == "" || !strings.Contains(line, ":") {
+			log.Printf("[DEBUG] 行 %d 跳过：空或无冒号", i+1)
+			continue
+		}
+
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			log.Printf("[DEBUG] 行 %d Split 失败: %v", i+1, parts)
+			continue
+		}
+
+		ip := strings.TrimSpace(parts[0])
+		portStr := strings.TrimSpace(parts[1])
+		log.Printf("[DEBUG] 行 %d IP: %q, PortStr: %q", i+1, ip, portStr)
+
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			log.Printf("[DEBUG] 行 %d Atoi 失败: %v", i+1, err)
+			continue
+		}
+		if port <= 0 || port > 65535 {
+			log.Printf("[DEBUG] 行 %d 端口范围错误: %d", i+1, port)
+			continue
+		}
+		if net.ParseIP(ip) == nil {
+			log.Printf("[DEBUG] 行 %d IP 无效: %s", i+1, ip)
+			continue
+		}
+
+		addr := fmt.Sprintf("%s:%d", ip, port)
+		addrs = append(addrs, addr)
+		log.Printf("[DEBUG] 行 %d 解析成功: %s", i+1, addr)
+	}
+
+	log.Printf("[*] 从 URL 成功加载 %d 个有效地址: %v", len(addrs), addrs)
+	return addrs, nil
 }
 
 // ==================== 交互输入 ====================
