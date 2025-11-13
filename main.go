@@ -115,7 +115,7 @@ func main() {
     var finalThreads int
     var finalTimeout time.Duration
     var addrs []string
-    //var detailFile, validFile *os.File
+    var detailFile, validFile *os.File
 	//var validCount int64 
 
     // ==================== 命令行参数优先 ====================
@@ -221,17 +221,6 @@ func main() {
     // ==================== 加载弱密码 ====================
  	weakPasswords = loadWeakPasswords("weak_passwords.txt")  // 重新赋值全局
 	
-    // ==================== 初始化日志 ====================
-    logFile, err := os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer logFile.Close()
-    multiWriter := io.MultiWriter(os.Stdout, logFile)
-    log.SetOutput(multiWriter)
-    log.SetFlags(log.LstdFlags)
-    log.Printf("[*] 扫描开始: %s", time.Now().Format("2006-01-02 15:04:05"))
-
     // ==================== 初始化输出文件 ====================
     detailFile, _ = os.OpenFile("result_detail.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
     validFile, _ = os.OpenFile("proxy_valid.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
