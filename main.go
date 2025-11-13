@@ -87,6 +87,8 @@ func main() {
 	
 	// ==================== 修复2：加载国家缓存 ====================
     loadCountryCache()
+
+	defer saveCountryCache()
 	
 	// ==================== 修复3：初始化日志文件 ====================
     logFile, err = os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -196,7 +198,7 @@ func main() {
             for p := range portsSet {
                 ports = append(ports, p)
             }
-            sort.Strings(ports)
+           	import "sort"
             finalPortInput = strings.Join(ports, ",")
         } else {
             finalPortInput = defaultPort
@@ -291,12 +293,10 @@ func main() {
             }
             bar.Increment()
         }(addr)
-        // ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ←
     }
 
     wg.Wait()
     bar.Finish()
-    saveCountryCache()
     log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", atomic.LoadInt64(&validCount))
 // ==================== 从 URL 加载 IP:PORT（完整调试 + 修复版）================
 func fetchAddrsFromURL(u string, timeout time.Duration) ([]string, error) {
@@ -386,7 +386,7 @@ func fetchAddrsFromURL(u string, timeout time.Duration) ([]string, error) {
 
 // ==================== 交互输入 ====================
 func prompt(msg, def string) string {
-	fmt.Print("请输入" + msg)
+	fmt.Print("请输入%s" + msg)
 	scanner := bufio.NewScanner(os.Stdin)
 	if scanner.Scan() {
 		input := strings.TrimSpace(scanner.Text())
