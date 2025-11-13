@@ -28,7 +28,7 @@ sudo apt install -y git curl wget build-essential upx-ucl
 ### 步骤 2：安装 Go 语言
 #下载 Go 1.24
 
-wget https://go.dev/dl/go1.24.10.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.24.9.linux-amd64.tar.gz
 
 #解压到 /usr/local
 
