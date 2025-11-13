@@ -176,13 +176,11 @@ func main() {
 	}
 
 	if finalURL != "" {
-		// 从URL加载IP:port列表
-		addrs, err = fetchAddrsFromURL(finalURL)
-		if err != nil {
-			log.Printf("Warning: failed to fetch from URL: %v, falling back to IP range", err)
-		}
+    	addrs, err = fetchAddrsFromURL(finalURL, finalTimeout)  // ← 传 timeout
+    	if err != nil {
+        log.Printf("Warning: failed to fetch from URL: %v, falling back to IP range", err)
+    	}
 	}
-
 	if len(addrs) == 0 {
 		// 回落到IP范围
 		ipsChan, err := ipGenerator(finalIPRange)
@@ -275,38 +273,50 @@ func main() {
 }
 
 // ==================== 从URL获取addr列表 ====================
-func fetchAddrsFromURL(u string) ([]string, error) {
-	resp, err := http.Get(u)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP error: %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	var addrs []string
-	for _, line := range strings.Split(string(body), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.Contains(line, ":") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		ip := parts[0]
-		portStr := parts[1]
-		if net.ParseIP(ip) == nil {
-			continue // 无效IP
-		}
-		port, err := strconv.Atoi(portStr)
-		if err != nil || port <= 0 || port > 65535 {
-			continue // 无效端口
-		}
-		addrs = append(addrs, fmt.Sprintf("%s:%d", ip, port))
-	}
-	return addrs, nil
+func fetchAddrsFromURL(u string, timeout time.Duration) ([]string, error) {  // ← 加 timeout 参数
+    log.Printf("[*] 正在从 URL 加载代理列表: %s (timeout: %v)", u, timeout)
+
+    client := &http.Client{
+        Timeout: timeout,  // ← 关键！防止卡死
+    }
+    resp, err := client.Get(u)
+    if err != nil {
+        log.Printf("[x] URL 请求失败: %v", err)
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK {
+        log.Printf("[x] HTTP 状态码错误: %d", resp.StatusCode)
+        return nil, fmt.Errorf("HTTP error: %d", resp.StatusCode)
+    }
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        log.Printf("[x] 读取响应失败: %v", err)
+        return nil, err
+    }
+
+    var addrs []string
+    for _, line := range strings.Split(string(body), "\n") {
+        line = strings.TrimSpace(line)
+        if line == "" || !strings.Contains(line, ":") {
+            continue
+        }
+        parts := strings.SplitN(line, ":", 2)
+        ip := parts[0]
+        portStr := parts[1]
+        if net.ParseIP(ip) == nil {
+            continue
+        }
+        port, err := strconv.Atoi(portStr)
+        if err != nil || port <= 0 || port > 65535 {
+            continue
+        }
+        addrs = append(addrs, fmt.Sprintf("%s:%d", ip, port))
+    }
+    log.Printf("[*] 从 URL 成功加载 %d 个地址", len(addrs))
+    return addrs, nil
 }
 
 // ==================== 交互输入 ====================
