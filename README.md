@@ -25,14 +25,14 @@ sudo apt update && sudo apt upgrade -y
 
 sudo apt install -y git curl wget build-essential upx-ucl
 
-### 步骤 2：安装 Go 语言（1.21+）
-#下载 Go 1.21.5（官方推荐）
+### 步骤 2：安装 Go 语言
+#下载 Go 1.24
 
-wget https://go.dev/dl/go1.21.5.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.24.10.linux-amd64.tar.gz
 
 #解压到 /usr/local
 
-sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.24.10.linux-amd64.tar.gz
 
 #添加环境变量（永久生效）
 
@@ -46,7 +46,7 @@ source ~/.profile
 
 go version
 
-#输出应为：go version go1.21.5 linux/amd64
+#输出应为：go version go1.24.10 linux/amd64
 
 ###  步骤 3：克隆项目并编译
 #克隆仓库
