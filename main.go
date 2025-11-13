@@ -29,18 +29,43 @@ import (
 // ==================== 配置与常量 ====================
 var (
 	weakPasswords = [][2]string{
-		var (
-weakPasswords = [][2]string{
-    {"123456", "123456"},{"password", "password"},{"admin", "admin"},{"admin", "123456"},            
-    {"root", "root"},{"root", "123456"},{"123456789", "123456789"}, {"qwerty", "qwerty"},
-    {"12345", "12345"},{"12345678", "12345678"},{"111111", "111111"},{"user", "user"}, 
-    {"user", "password"},{"123", "123"},{"proxy", "proxy"},{"socks5", "socks5"},{"1234567", "1234567"},
-    {"iloveyou", "iloveyou"},{"123123", "123123"},{"000000", "000000"},{"welcome", "welcome"},{"secret", "secret"},
-    {"dragon", "dragon"},{"monkey", "monkey"},{"football", "football"},{"letmein", "letmein"},{"sunshine", "sunshine"},
-    {"baseball", "baseball"},{"princess", "princess"},{"admin123", "admin123"},{"superman", "superman"},{"guest", "guest"},
-    {"", "123456"},{"admin", ""},{"", "admin"},{"test", "test"},{"demo", "demo"},           
-}
-)
+		{"123456", "123456"},           // 最常见密码
+		{"password", "password"},
+		{"admin", "admin"},
+		{"admin", "123456"},
+		{"root", "root"},
+		{"root", "123456"},
+		{"123456789", "123456789"},
+		{"qwerty", "qwerty"},
+		{"12345", "12345"},
+		{"12345678", "12345678"},
+		{"111111", "111111"},
+		{"user", "user"},
+		{"user", "password"},
+		{"123", "123"},
+		{"proxy", "proxy"},
+		{"socks5", "socks5"},
+		{"1234567", "1234567"},
+		{"iloveyou", "iloveyou"},
+		{"123123", "123123"},
+		{"000000", "000000"},
+		{"welcome", "welcome"},
+		{"secret", "secret"},
+		{"dragon", "dragon"},
+		{"monkey", "monkey"},
+		{"football", "football"},
+		{"letmein", "letmein"},
+		{"sunshine", "sunshine"},
+		{"baseball", "baseball"},
+		{"princess", "princess"},
+		{"admin123", "admin123"},
+		{"superman", "superman"},
+		{"guest", "guest"},
+		{"", "123456"},
+		{"admin", ""},
+		{"", "admin"},
+		{"test", "test"},
+		{"demo", "demo"},
 	}
 	protocols        = []string{"socks5", "http", "socks4"} // 调整顺序：socks5 先，更常见
 	countryCache     sync.Map                               // ip -> countryCode
@@ -54,7 +79,7 @@ weakPasswords = [][2]string{
 	limiter          = rate.NewLimiter(rate.Every(time.Second/100), 100) // 每秒100请求限速
 )
 
-// ==================== 加载弱密码函数（放置在这里：main 函数之前） ====================
+// ==================== 加载弱密码函数 ====================
 func loadWeakPasswords(file string) [][2]string {
 	data, err := os.ReadFile(file)
 	if err != nil {
@@ -82,6 +107,7 @@ func main() {
 	portInput := flag.String("port", "", "Ports: 1080 / 80 8080 / 1-65535")
 	threads := flag.Int("threads", 0, "Max concurrent connections")
 	timeout := flag.Duration("timeout", 0, "Timeout per request (e.g. 5s)")
+	urlInput := flag.String("url", "", "URL to fetch IP:port list from (e.g. https://example.com/ips.txt)") // 新参数
 	flag.Parse()
 
 	// ==================== 默认值 ====================
@@ -92,7 +118,7 @@ func main() {
 	defaultTimeout := 5 * time.Second
 
 	// ==================== 交互式输入 ====================
-	var finalIPRange, finalPortInput string
+	var finalIPRange, finalPortInput, finalURL string
 	var finalThreads int
 	var finalTimeout time.Duration
 
@@ -109,6 +135,9 @@ func main() {
 	} else {
 		finalPortInput = *portInput
 	}
+
+	// --- URL ---
+	finalURL = *urlInput // 如果命令行提供，则使用
 
 	// --- 并发数 ---
 	if *threads <= 0 {
@@ -127,22 +156,52 @@ func main() {
 	// ==================== 配置摘要 ====================
 	fmt.Printf("\n[*] 扫描范围: %s\n", finalIPRange)
 	fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
+	if finalURL != "" {
+		fmt.Printf("[*] 从URL加载: %s\n", finalURL)
+	}
 	fmt.Printf("[*] 最大并发: %d\n", finalThreads)
 	fmt.Printf("[*] 超时时间: %v\n\n", finalTimeout)
 
+	// ==================== 加载弱密码 ====================
+	weakPasswords = loadWeakPasswords("weak_passwords.txt")
+
 	// ==================== 解析 IP 和端口 ====================
-	ipsChan, err := ipGenerator(finalIPRange)
-	if err != nil {
-		log.Fatalf("IP range error: %v", err)
-	}
-	ports, err := parsePorts(finalPortInput)
+	var addrs []string // 存储所有 addr (IP:port)
+	var ports []int
+	var err error
+
+	ports, err = parsePorts(finalPortInput)
 	if err != nil {
 		log.Fatalf("Port error: %v", err)
 	}
 
-	// 进度条：由于使用生成器，无法预计算总数，使用无限模式
-	bar := pb.StartNew(0) // 或预估总数，如果能计算
-	bar.Set("prefix", "[*] Scanning: ")
+	if finalURL != "" {
+		// 从URL加载IP:port列表
+		addrs, err = fetchAddrsFromURL(finalURL)
+		if err != nil {
+			log.Printf("Warning: failed to fetch from URL: %v, falling back to IP range", err)
+		}
+	}
+
+	if len(addrs) == 0 {
+		// 回落到IP范围
+		ipsChan, err := ipGenerator(finalIPRange)
+		if err != nil {
+			log.Fatalf("IP range error: %v", err)
+		}
+		for ip := range ipsChan {
+			for _, port := range ports {
+				addrs = append(addrs, fmt.Sprintf("%s:%d", ip, port))
+			}
+		}
+	} else if len(ports) > 0 && finalURL != "" {
+		// 如果URL提供了addrs，但端口也指定，则可能覆盖或追加（这里假设URL已含端口，忽略范围端口）
+		log.Println("[*] URL provided with ports, using URL addrs only")
+	}
+
+	// 计算总数用于进度条（如果使用生成器，无法预知，则用无限模式）
+	total := len(addrs)
+	fmt.Printf("[*] Total addresses: %d\n", total)
 
 	// ==================== 初始化日志 ====================
 	logFile, err := os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -171,6 +230,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	bar := pb.StartNew(total)
 	bar.SetWriter(multiWriter)
 	go func() {
 		<-c
@@ -186,35 +246,67 @@ func main() {
 	sem := make(chan struct{}, finalThreads)
 	var wg sync.WaitGroup
 
-	for ip := range ipsChan {
-		for _, port := range ports {
-			if ctx.Err() != nil {
-				break
-			}
-			addr := fmt.Sprintf("%s:%d", ip, port)
-			wg.Add(1)
-			go func(a string) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem; bar.Increment() }()
-				ip, portStr, _ := strings.Cut(a, ":")
-				port, _ := strconv.Atoi(portStr)
-				result := scanProxy(ctx, ip, port, finalTimeout)
-				if result.Scheme != "" {
-					key := fmt.Sprintf("%s:%d", result.IP, result.Port)
-					if _, loaded := seenProxies.LoadOrStore(key, true); !loaded {
-						atomic.AddInt64(&validCount, 1)
-						writeResult(result)
-					}
-				}
-			}(addr)
+	for _, addr := range addrs {
+		if ctx.Err() != nil {
+			break
 		}
+		wg.Add(1)
+		go func(a string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem; bar.Increment() }()
+			ip, portStr, _ := strings.Cut(a, ":")
+			port, _ := strconv.Atoi(portStr)
+			result := scanProxy(ctx, ip, port, finalTimeout)
+			if result.Scheme != "" {
+				key := fmt.Sprintf("%s:%d", result.IP, result.Port)
+				if _, loaded := seenProxies.LoadOrStore(key, true); !loaded {
+					atomic.AddInt64(&validCount, 1)
+					writeResult(result)
+				}
+			}
+		}(addr)
 	}
 	wg.Wait()
 	bar.Finish()
 	saveCountryCache()
 	log.Printf("[+] 完成！发现 %d 个代理 → proxy_valid.txt", validCount)
 	log.Printf("[*] 扫描结束: %s", time.Now().Format("2006-01-02 15:04:05"))
+}
+
+// ==================== 从URL获取addr列表 ====================
+func fetchAddrsFromURL(u string) ([]string, error) {
+	resp, err := http.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP error: %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var addrs []string
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, ":") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		ip := parts[0]
+		portStr := parts[1]
+		if net.ParseIP(ip) == nil {
+			continue // 无效IP
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 || port > 65535 {
+			continue // 无效端口
+		}
+		addrs = append(addrs, fmt.Sprintf("%s:%d", ip, port))
+	}
+	return addrs, nil
 }
 
 // ==================== 交互输入 ====================
