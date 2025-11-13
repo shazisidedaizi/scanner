@@ -154,6 +154,9 @@ func main() {
 	}
 
 	// ==================== 配置摘要 ====================
+	var addrs []string // 存储所有 addr (IP:port)
+	var err erro
+	
 	fmt.Printf("\n[*] 扫描范围: %s\n", finalIPRange)
 	fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
 	if finalURL != "" {
@@ -175,9 +178,7 @@ func main() {
 	weakPasswords = loadWeakPasswords("weak_passwords.txt")
 
 	// ==================== 解析 IP 和端口 ====================
-	var addrs []string // 存储所有 addr (IP:port)
 	var ports []int
-	var err error
 
 	ports, err = parsePorts(finalPortInput)
 	if err != nil {
