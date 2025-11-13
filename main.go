@@ -219,7 +219,7 @@ func main() {
     fmt.Printf("[*] 超时时间: %v\n", finalTimeout)
 
     // ==================== 加载弱密码 ====================
- 	weakPasswords := loadWeakPasswords("weak_passwords.txt")  // 重新赋值全局
+ 	weakPasswords = loadWeakPasswords("weak_passwords.txt")  // 重新赋值全局
 	
     // ==================== 初始化日志 ====================
     logFile, err := os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
