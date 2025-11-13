@@ -35,9 +35,10 @@ wget https://go.dev/dl/go1.24.9.linux-amd64.tar.gz
 sudo tar -C /usr/local -xzf go1.24.9.linux-amd64.tar.gz
 
 #清除重复配置
+
 sed -i '/go\/bin/d' ~/.bashrc ~/.profile 2>/dev/null
 
-#添加环境变量到 .bashrc（优先级高于 /usr/bin）
+#添加环境变量到 .bashrc
 
 cat >> ~/.bashrc <<'EOF'
 export PATH=/usr/local/go/bin:$PATH
@@ -46,6 +47,7 @@ export GOBIN=$GOPATH/bin
 EOF
 
 #立即生效
+
 source ~/.bashrc
 
 #验证安装
