@@ -97,9 +97,8 @@ func main() {
     var finalThreads int
     var finalTimeout time.Duration
     var addrs []string
-    var weakPasswords []string
     var detailFile, validFile *os.File
-    var validCount int32 // 使用 atomic 统计
+	var validCount int64 
 
     // ==================== 命令行参数优先 ====================
     finalURL = *urlInput
@@ -202,8 +201,8 @@ func main() {
     fmt.Printf("[*] 超时时间: %v\n", finalTimeout)
 
     // ==================== 加载弱密码 ====================
-    weakPasswords = loadWeakPasswords("weak_passwords.txt")
-
+ 	weakPasswords := loadWeakPasswords("weak_passwords.txt")  // 重新赋值全局
+	
     // ==================== 初始化日志 ====================
     logFile, err := os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
     if err != nil {
@@ -251,66 +250,47 @@ func main() {
         cancel()
     }()
 
-    // ==================== 扫描主逻辑 ====================
+     // ==================== 扫描主逻辑 ====================
     var wg sync.WaitGroup
     sem := make(chan struct{}, finalThreads)
 
     for _, addr := range addrs {
         wg.Add(1)
-        sem <- struct{}{}
-		    go func(a string) {
+        sem <- struct{}{}  // 获取令牌
+        go func(a string) {
             defer wg.Done()
             defer func() { <-sem }()
+
             select {
             case <-ctx.Done():
                 return
             default:
             }
-            // scan 函数自己写入 detailFile/validFile，并使用 atomic 增加 validCount
-            scan(a, detailFile, validFile, &validCount)
+
+            ip, portStr, _ := strings.Cut(a, ":")
+            port, err := strconv.Atoi(portStr)
+            if err != nil {
+                bar.Increment()
+                return
+            }
+
+            result := scanProxy(ctx, ip, port, finalTimeout)
+            if result.Scheme != "" {
+                key := fmt.Sprintf("%s:%d", result.IP, result.Port)
+                if _, loaded := seenProxies.LoadOrStore(key, true); !loaded {
+                    atomic.AddInt64(&validCount, 1)
+                    writeResult(result)
+                }
+            }
             bar.Increment()
         }(addr)
+        // ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ←
     }
 
     wg.Wait()
     bar.Finish()
     saveCountryCache()
-    log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", atomic.LoadInt32(&validCount))
-}
-
-
-	// ==================== 主循环 ====================
-	sem := make(chan struct{}, finalThreads)
-	var wg sync.WaitGroup
-
-	for _, addr := range addrs {
-		if ctx.Err() != nil {
-			break
-		}
-		wg.Add(1)
-		go func(a string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem; bar.Increment() }()
-			ip, portStr, _ := strings.Cut(a, ":")
-			port, _ := strconv.Atoi(portStr)
-			result := scanProxy(ctx, ip, port, finalTimeout)
-			if result.Scheme != "" {
-				key := fmt.Sprintf("%s:%d", result.IP, result.Port)
-				if _, loaded := seenProxies.LoadOrStore(key, true); !loaded {
-					atomic.AddInt64(&validCount, 1)
-					writeResult(result)
-				}
-			}
-		}(addr)
-	}
-	wg.Wait()
-	bar.Finish()
-	saveCountryCache()
-	log.Printf("[+] 完成！发现 %d 个代理 → proxy_valid.txt", validCount)
-	log.Printf("[*] 扫描结束: %s", time.Now().Format("2006-01-02 15:04:05"))
-}
-
+    log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", atomic.LoadInt64(&validCount))
 // ==================== 从 URL 加载 IP:PORT（完整调试 + 修复版）================
 func fetchAddrsFromURL(u string, timeout time.Duration) ([]string, error) {
 	log.Printf("[*] 正在从 URL 加载地址: %s (timeout: %v)", u, timeout)
