@@ -135,50 +135,55 @@ func main() {
 			addrs = append(addrs, ip) // 先只生成 IP，端口可能在下面补充
 		}
 	}
+// ==================== 交互输入端口（必要时） ====================
+needPortInput := false
+for _, a := range addrs {
+    if _, _, err := net.SplitHostPort(a); err != nil {
+        needPortInput = true
+        break
+    }
+}
 
-	// ==================== 交互输入端口（必要时） ====================
-	needPortInput := false
-	for _, a := range addrs {
-		if _, _, err := net.SplitHostPort(a); err != nil {
-			needPortInput = true
-			break
-		}
-	}
+if needPortInput {
+    if finalPortInput == "" {
+        finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+    }
+    ports, _ := parsePorts(finalPortInput)
 
-	if needPortInput {
-		// 提示输入端口
-		if finalPortInput == "" {
-			finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
-		}
-		ports, _ := parsePorts(finalPortInput)
-
-		// 补充端口到 addrs
-		var newAddrs []string
-		for _, a := range addrs {
-			host, _, err := net.SplitHostPort(a)
-			if err != nil {
-				for _, p := range ports {
-					newAddrs = append(newAddrs, fmt.Sprintf("%s:%d", a, p))
-				}
-			} else {
-				newAddrs = append(newAddrs, a)
-			}
-		}
-		addrs = newAddrs
-	} else if finalPortInput == "" {
-		// URL 已包含端口且用户未指定端口，则自动提取用于显示
-		portsSet := make(map[string]bool)
-		for _, addr := range addrs {
-			_, port, _ := net.SplitHostPort(addr)
-			portsSet[port] = true
-		}
-		ports := make([]string, 0, len(portsSet))
-		for p := range portsSet {
-			ports = append(ports, p)
-		}
-		sort.Strings(ports)
-		finalPortInput = strings.Join(ports, ",")
-	}
+    var newAddrs []string
+    for _, a := range addrs {
+        host, _, err := net.SplitHostPort(a)
+        if err != nil {
+            for _, p := range ports {
+                newAddrs = append(newAddrs, fmt.Sprintf("%s:%d", a, p))
+            }
+        } else {
+            newAddrs = append(newAddrs, a)
+        }
+    }
+    addrs = newAddrs
+} else if finalPortInput == "" {
+    // URL 已包含端口，自动提取用于显示
+    portsSet := make(map[string]bool)
+    for _, addr := range addrs {
+        if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+            portsSet[port] = true
+        }
+    }
+    if len(portsSet) > 0 {
+        ports := make([]string, 0, len(portsSet))
+        for p := range portsSet {
+            ports = append(ports, p)
+        }
+        sort.Strings(ports)
+        finalPortInput = strings.Join(ports, ",")
+    } else {
+        finalPortInput = defaultPort // 兜底
+    }
+} else {
+    // 用户通过 -port 指定了端口，但 URL 已带端口 → 警告？
+    log.Printf("警告: -port 参数将被忽略，URL 已提供端口")
+}
 
 	// ==================== 回退其他参数 ====================
 	if finalThreads == 0 {
