@@ -77,194 +77,207 @@ func loadWeakPasswords(file string) [][2]string {
 
 // ==================== 主函数 ====================
 func main() {
-	// ==================== 命令行参数 ====================
-	ipRange := flag.String("ip-range", "", "IP range: 192.168.1.1-192.168.1.255 or CIDR")
-	portInput := flag.String("port", "", "Ports: 1080 / 80 8080 / 1-65535")
-	threads := flag.Int("threads", 0, "Max concurrent connections")
-	timeout := flag.Duration("timeout", 0, "Timeout per request (e.g. 5s)")
-	urlInput := flag.String("url", "", "URL to fetch IP:port list from (e.g. https://example.com/ips.txt)")
-	flag.Parse()
+    // ==================== 命令行参数 ====================
+    ipRange := flag.String("ip-range", "", "IP range: 192.168.1.1-192.168.1.255 or CIDR")
+    portInput := flag.String("port", "", "Ports: 1080 / 80 8080 / 1-65535")
+    threads := flag.Int("threads", 0, "Max concurrent connections")
+    timeout := flag.Duration("timeout", 0, "Timeout per request (e.g. 5s)")
+    urlInput := flag.String("url", "", "URL to fetch IP:port list from")
+    flag.Parse()
 
-	// ==================== 默认值 ====================
-	defaultStart := "157.254.32.0"
-	defaultEnd := "157.254.52.255"
-	defaultPort := "1080"
-	defaultThreads := 1000
-	defaultTimeout := 5 * time.Second
+    // ==================== 默认值 ====================
+    defaultStart := "157.254.32.0"
+    defaultEnd := "157.254.52.255"
+    defaultPort := "1080"
+    defaultThreads := 1000
+    defaultTimeout := 5 * time.Second
 
-	// ==================== 变量声明 ====================
-	var finalIPRange, finalPortInput, finalURL string
-	var finalThreads int
-	var finalTimeout time.Duration
-	var addrs []string
-	var err error
+    // ==================== 变量声明 ====================
+    var finalIPRange, finalPortInput, finalURL string
+    var finalThreads int
+    var finalTimeout time.Duration
+    var addrs []string
+    var weakPasswords []string
+    var detailFile, validFile *os.File
+    var validCount int32 // 使用 atomic 统计
 
-	// ==================== 命令行参数优先 ====================
-	finalURL = *urlInput
-	if *ipRange != "" {
-		finalIPRange = *ipRange
-	}
-	if *portInput != "" {
-		finalPortInput = *portInput
-	}
-	if *threads > 0 {
-		finalThreads = *threads
-	}
-	if *timeout > 0 {
-		finalTimeout = *timeout
-	}
-
-	// ==================== URL 优先加载 ====================
-	if finalURL != "" {
-		fmt.Printf("[*] 正在从 URL 加载代理列表: %s\n", finalURL)
-		addrs, err = fetchAddrsFromURL(finalURL, defaultTimeout)
-		if err != nil || len(addrs) == 0 {
-			log.Printf("URL 加载失败或为空 → 回退到交互式输入 IP 和端口")
-			addrs = nil
-		}
-	}
-
-	// ==================== 回退交互式输入 IP ====================
-	if addrs == nil || len(addrs) == 0 {
-		if finalIPRange == "" {
-			finalIPRange = promptIPRange(defaultStart, defaultEnd)
-		}
-
-		ipsChan, _ := ipGenerator(finalIPRange)
-		for ip := range ipsChan {
-			addrs = append(addrs, ip) // 先只生成 IP，端口可能在下面补充
-		}
-	}
-// ==================== 交互输入端口（必要时） ====================
-needPortInput := false
-for _, a := range addrs {
-    if _, _, err := net.SplitHostPort(a); err != nil {
-        needPortInput = true
-        break
+    // ==================== 命令行参数优先 ====================
+    finalURL = *urlInput
+    if *ipRange != "" {
+        finalIPRange = *ipRange
     }
-}
-
-if needPortInput {
-    if finalPortInput == "" {
-        finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+    if *portInput != "" {
+        finalPortInput = *portInput
     }
-    ports, _ := parsePorts(finalPortInput)
+    if *threads > 0 {
+        finalThreads = *threads
+    }
+    if *timeout > 0 {
+        finalTimeout = *timeout
+    }
 
-    var newAddrs []string
-    for _, a := range addrs {
-        host, _, err := net.SplitHostPort(a)
-        if err != nil {
-            for _, p := range ports {
-                newAddrs = append(newAddrs, fmt.Sprintf("%s:%d", a, p))
-            }
+    // ==================== URL 优先加载 ====================
+    if finalURL != "" {
+        fmt.Printf("[*] 正在从 URL 加载代理列表: %s\n", finalURL)
+        addrsTmp, err := fetchAddrsFromURL(finalURL, defaultTimeout)
+        if err != nil || len(addrsTmp) == 0 {
+            log.Printf("URL 加载失败或为空 → 回退到交互式输入 IP 和端口")
         } else {
-            newAddrs = append(newAddrs, a)
+            addrs = addrsTmp
         }
     }
-    addrs = newAddrs
-} else if finalPortInput == "" {
-    // URL 已包含端口，自动提取用于显示
-    portsSet := make(map[string]bool)
-    for _, addr := range addrs {
-        if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
-            portsSet[port] = true
+
+    // ==================== 回退交互式输入 IP ====================
+    if len(addrs) == 0 {
+        if finalIPRange == "" {
+            finalIPRange = promptIPRange(defaultStart, defaultEnd)
+        }
+        ipsChan, _ := ipGenerator(finalIPRange)
+        for ip := range ipsChan {
+            addrs = append(addrs, ip)
         }
     }
-    if len(portsSet) > 0 {
-        ports := make([]string, 0, len(portsSet))
-        for p := range portsSet {
-            ports = append(ports, p)
+
+    // ==================== 回退交互式输入端口 ====================
+    needPortInput := false
+    for _, a := range addrs {
+        if _, _, err := net.SplitHostPort(a); err != nil {
+            needPortInput = true
+            break
         }
-        sort.Strings(ports)
-        finalPortInput = strings.Join(ports, ",")
+    }
+
+    if needPortInput {
+        if finalPortInput == "" {
+            finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+        }
+        ports, _ := parsePorts(finalPortInput)
+        var newAddrs []string
+        for _, a := range addrs {
+            if _, _, err := net.SplitHostPort(a); err != nil {
+                for _, p := range ports {
+                    newAddrs = append(newAddrs, fmt.Sprintf("%s:%d", a, p))
+                }
+            } else {
+                newAddrs = append(newAddrs, a)
+            }
+        }
+        addrs = newAddrs
+    } else if finalPortInput == "" {
+        // URL 已包含端口，自动提取用于显示
+        portsSet := make(map[string]bool)
+        for _, addr := range addrs {
+            if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+                portsSet[port] = true
+            }
+        }
+        if len(portsSet) > 0 {
+            ports := make([]string, 0, len(portsSet))
+            for p := range portsSet {
+                ports = append(ports, p)
+            }
+            sort.Strings(ports)
+            finalPortInput = strings.Join(ports, ",")
+        } else {
+            finalPortInput = defaultPort
+        }
+    }
+
+    // ==================== 回退其他参数 ====================
+    if finalThreads == 0 {
+        finalThreads = promptInt("最大并发数（默认: "+strconv.Itoa(defaultThreads)+"):", defaultThreads)
+    }
+    if finalTimeout == 0 {
+        finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
+    }
+
+    // ==================== 输出配置摘要 ====================
+    if finalURL != "" && len(addrs) > 0 {
+        fmt.Printf("[*] 地址来源: URL 加载（共 %d 条）\n", len(addrs))
     } else {
-        finalPortInput = defaultPort // 兜底
+        fmt.Printf("[*] 扫描范围: %s\n", finalIPRange)
     }
-} else {
-    // 用户通过 -port 指定了端口，但 URL 已带端口 → 警告？
-    log.Printf("警告: -port 参数将被忽略，URL 已提供端口")
-}
+    fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
+    fmt.Printf("[*] 最大并发: %d\n", finalThreads)
+    fmt.Printf("[*] 超时时间: %v\n", finalTimeout)
 
-	// ==================== 回退其他参数 ====================
-	if finalThreads == 0 {
-		finalThreads = promptInt("最大并发数（默认: "+strconv.Itoa(defaultThreads)+"):", defaultThreads)
-	}
-	if finalTimeout == 0 {
-		finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
-	}
+    // ==================== 加载弱密码 ====================
+    weakPasswords = loadWeakPasswords("weak_passwords.txt")
 
-	// ==================== 输出配置摘要 ====================
-	if finalURL != "" && len(addrs) > 0 {
-		fmt.Printf("[*] 地址来源: URL 加载（共 %d 条）\n", len(addrs))
-	} else {
-		fmt.Printf("[*] 扫描范围: %s\n", finalIPRange)
-	}
-	fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
-	fmt.Printf("[*] 最大并发: %d\n", finalThreads)
-	fmt.Printf("[*] 超时时间: %v\n", finalTimeout)
+    // ==================== 初始化日志 ====================
+    logFile, err := os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer logFile.Close()
+    multiWriter := io.MultiWriter(os.Stdout, logFile)
+    log.SetOutput(multiWriter)
+    log.SetFlags(log.LstdFlags)
+    log.Printf("[*] 扫描开始: %s", time.Now().Format("2006-01-02 15:04:05"))
 
-	// ==================== 加载弱密码 ====================
-	weakPasswords = loadWeakPasswords("weak_passwords.txt")
-
-	// ==================== 解析 IP 和端口 ====================
-	ports, err := parsePorts(finalPortInput)
-	if err != nil {
-		log.Fatalf("Port error: %v", err)
-	}
-
-	if len(addrs) == 0 {
-		ipsChan, err := ipGenerator(finalIPRange)
-		if err != nil {
-			log.Fatalf("IP range error: %v", err)
-		}
-		for ip := range ipsChan {
-			for _, port := range ports {
-				addrs = append(addrs, fmt.Sprintf("%s:%d", ip, port))
-			}
-		}
-	}
-
-	total := len(addrs)
-	fmt.Printf("[*] Total addresses: %d\n", total)
-
-	// ==================== 初始化日志 ====================
-	logFile, err := os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer logFile.Close()
-	multiWriter := io.MultiWriter(os.Stdout, logFile)
-	log.SetOutput(multiWriter)
-	log.SetFlags(log.LstdFlags)
-	log.Printf("[*] 扫描开始: %s", time.Now().Format("2006-01-02 15:04:05"))
-
-	// ==================== 初始化输出文件 ====================
-	detailFile, _ = os.OpenFile("result_detail.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	validFile, _ = os.OpenFile("proxy_valid.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+    // ==================== 初始化输出文件 ====================
+    detailFile, _ = os.OpenFile("result_detail.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+    validFile, _ = os.OpenFile("proxy_valid.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// 必须 defer，防止 panic 泄露
 	defer detailFile.Close()
 	defer validFile.Close()
-	fmt.Fprintln(detailFile, "# 全协议扫描详细日志")
-	fmt.Fprintln(validFile, "# scheme://[user:pass@]ip:port#CC")
+	log.Printf("[*] 正在从 URL 加载代理列表: %s", finalURL)
 
-	// 加载国家缓存
-	loadCountryCache()
+	if finalURL != "" && len(addrs) > 0 {
+    	log.Printf("[*] 地址来源: URL 加载（共 %d 条）", len(addrs))
+	} else {
+    	log.Printf("[*] 扫描范围: %s", finalIPRange)
+	}
+	log.Printf("[*] 端口配置: %s", finalPortInput)
+	log.Printf("[*] 最大并发: %d", finalThreads)
+	log.Printf("[*] 超时时间: %v", finalTimeout)
+	
+    // ==================== 扫描准备 ====================
+    total := len(addrs)
+    if total == 0 {
+        log.Fatal("未获取到任何 IP:port，程序退出")
+    }
 
-	// ==================== 后台运行支持 ====================
-	signal.Ignore(syscall.SIGHUP)
-	ctx, cancel := context.WithCancel(context.Background())
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	bar := pb.StartNew(total)
-	bar.SetWriter(multiWriter)
-	go func() {
-		<-c
-		log.Println("[!] 收到中断信号，正在优雅退出...")
-		cancel()
-		bar.Finish()
-		saveCountryCache()
-		log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", validCount)
-		os.Exit(0)
-	}()
+    bar := pb.StartNew(total)
+    bar.SetWriter(multiWriter)
+
+    ctx, cancel := context.WithCancel(context.Background())
+    c := make(chan os.Signal, 1)
+    signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+    go func() {
+        <-c
+        log.Println("[!] 收到中断信号，正在优雅退出...")
+        cancel()
+    }()
+
+    // ==================== 扫描主逻辑 ====================
+    var wg sync.WaitGroup
+    sem := make(chan struct{}, finalThreads)
+
+    for _, addr := range addrs {
+        wg.Add(1)
+        sem <- struct{}{}
+		    go func(a string) {
+            defer wg.Done()
+            defer func() { <-sem }()
+            select {
+            case <-ctx.Done():
+                return
+            default:
+            }
+            // scan 函数自己写入 detailFile/validFile，并使用 atomic 增加 validCount
+            scan(a, detailFile, validFile, &validCount)
+            bar.Increment()
+        }(addr)
+    }
+
+    wg.Wait()
+    bar.Finish()
+    saveCountryCache()
+    log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", atomic.LoadInt32(&validCount))
+}
+
 
 	// ==================== 主循环 ====================
 	sem := make(chan struct{}, finalThreads)
