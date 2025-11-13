@@ -89,7 +89,7 @@ func main() {
     loadCountryCache()
 	
 	// ==================== 修复3：初始化日志文件 ====================
-    logFile, err := os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+    logFile, err = os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
     if err != nil {
         log.Fatal(err) // 此时 log 输出到 stderr，正常
     }
@@ -115,7 +115,10 @@ func main() {
     var finalThreads int
     var finalTimeout time.Duration
     var addrs []string
-    var detailFile, validFile *os.File
+    var detailFile *os.File
+	var validFile  *os.File
+	var logFile *os.File
+	var err error
 	//var validCount int64 
 
     // ==================== 命令行参数优先 ====================
@@ -208,27 +211,24 @@ func main() {
         finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
     }
 
-    // ==================== 输出配置摘要 ====================
-    if finalURL != "" && len(addrs) > 0 {
-        fmt.Printf("[*] 地址来源: URL 加载（共 %d 条）\n", len(addrs))
-    } else {
-        fmt.Printf("[*] 扫描范围: %s\n", finalIPRange)
-    }
-    fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
-    fmt.Printf("[*] 最大并发: %d\n", finalThreads)
-    fmt.Printf("[*] 超时时间: %v\n", finalTimeout)
-
     // ==================== 加载弱密码 ====================
- 	weakPasswords = loadWeakPasswords("weak_passwords.txt")  // 重新赋值全局
+ 	weakPasswords = loadWeakPasswords("weak_passwords.txt") 
 	
     // ==================== 初始化输出文件 ====================
-    detailFile, _ = os.OpenFile("result_detail.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-    validFile, _ = os.OpenFile("proxy_valid.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	detailFile, err = os.OpenFile("result_detail.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+    	log.Fatal("打开 result_detail.txt 失败: ", err)
+	}
+	validFile, err = os.OpenFile("proxy_valid.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+    	log.Fatal("打开 proxy_valid.txt 失败: ", err)
+	}
 	// 必须 defer，防止 panic 泄露
 	defer detailFile.Close()
 	defer validFile.Close()
 	log.Printf("[*] 正在从 URL 加载代理列表: %s", finalURL)
-
+	
+	// ==================== 输出配置摘要 ====================
 	if finalURL != "" && len(addrs) > 0 {
     	log.Printf("[*] 地址来源: URL 加载（共 %d 条）", len(addrs))
 	} else {
