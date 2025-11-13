@@ -151,14 +151,23 @@ if finalTimeout == 0 {
 }
 
 // ==================== 输出配置摘要 ====================
-fmt.Printf("\n[*] 扫描范围: %s\n", finalIPRange)
+// 替换原来的 [*] 扫描范围 输出
+if finalURL != "" && len(addrs) > 0 {
+    fmt.Printf("[*] 地址来源: URL 加载（共 %d 条）\n", len(addrs))
+} else {
+    fmt.Printf("[*] 扫描范围: %s\n", finalIPRange)
+}
+
 fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
 fmt.Printf("[*] 最大并发: %d\n", finalThreads)
 fmt.Printf("[*] 超时时间: %v\n", finalTimeout)
-if finalURL != "" && len(addrs) > 0 {
-	fmt.Printf("[*] 已从 URL 加载代理列表，共 %d 条\n", len(addrs))
-}
 
+// 保留 URL 加载成功的提示（可选：可合并到上面的 if 中）
+if finalURL != "" && len(addrs) > 0 {
+    // 可以省略，因为上面已经输出了
+    // 或者保留更详细的信息
+}
+	
 	// ==================== 加载弱密码 ====================
 	weakPasswords = loadWeakPasswords("weak_passwords.txt")
 
