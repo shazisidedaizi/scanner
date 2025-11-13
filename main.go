@@ -34,19 +34,14 @@ var (
 		{"guest", "guest"}, {"", "admin"}, {"admin", ""}, {"password", "password"},
 		{"socks", "socks"}, {"demo", "demo"}, {"hello", "hello"}, {"qwerty", "qwerty"},
 	}
-
-	protocols = []string{"http", "socks5", "socks4"} // https 不支持，socks4 后置
-
-	countryCache sync.Map // ip -> countryCode
-	validCount   int64
-	seenProxies  sync.Map // ip:port -> struct{}
-
-	detailFile *os.File
-	validFile  *os.File
-
-	detailMu sync.Mutex
-	validMu  sync.Mutex
-
+	protocols        = []string{"http", "socks5", "socks4"} // https 不支持，socks4 后置
+	countryCache     sync.Map                               // ip -> countryCode
+	validCount       int64
+	seenProxies      sync.Map                               // ip:port -> struct{}
+	detailFile       *os.File
+	validFile        *os.File
+	detailMu         sync.Mutex
+	validMu          sync.Mutex
 	countryCacheFile = "country_cache.json"
 )
 
@@ -115,14 +110,9 @@ func main() {
 		log.Fatalf("Port error: %v", err)
 	}
 
-	candidates := make([]string, 0, len(ips)*len(ports))
-	for _, ip := range ips {
-		for _, port := range ports {
-			candidates = append(candidates, fmt.Sprintf("%s:%d", ip, port))
-		}
-	}
-
-	fmt.Printf("[*] IPs: %d, Ports: %d, Total: %d\n", len(ips), len(ports), len(candidates))
+	// 计算总数用于进度条
+	total := len(ips) * len(ports)
+	fmt.Printf("[*] IPs: %d, Ports: %d, Total: %d\n", len(ips), len(ports), total)
 
 	// ==================== 初始化日志 ====================
 	logFile, err := os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -130,11 +120,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer logFile.Close()
-
 	multiWriter := io.MultiWriter(os.Stdout, logFile)
 	log.SetOutput(multiWriter)
 	log.SetFlags(log.LstdFlags)
-
 	log.Printf("[*] 扫描开始: %s", time.Now().Format("2006-01-02 15:04:05"))
 
 	// ==================== 初始化输出文件 ====================
@@ -142,7 +130,6 @@ func main() {
 	validFile, _ = os.OpenFile("proxy_valid.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	defer detailFile.Close()
 	defer validFile.Close()
-
 	fmt.Fprintln(detailFile, "# 全协议扫描详细日志")
 	fmt.Fprintln(validFile, "# scheme://[user:pass@]ip:port#CC")
 
@@ -154,10 +141,8 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-
-	bar := pb.StartNew(len(candidates))
+	bar := pb.StartNew(total)
 	bar.SetWriter(multiWriter)
-
 	go func() {
 		<-c
 		log.Println("[!] 收到中断信号，正在优雅退出...")
@@ -172,29 +157,30 @@ func main() {
 	sem := make(chan struct{}, finalThreads)
 	var wg sync.WaitGroup
 
-	for _, addr := range candidates {
-		if ctx.Err() != nil {
-			break
-		}
-		wg.Add(1)
-		go func(a string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem; bar.Increment() }()
-
-			ip, portStr, _ := strings.Cut(a, ":")
-			port, _ := strconv.Atoi(portStr)
-			result := scanProxy(ctx, ip, port, finalTimeout)
-			if result.Scheme != "" {
-				key := fmt.Sprintf("%s:%d", result.IP, result.Port)
-				if _, loaded := seenProxies.LoadOrStore(key, true); !loaded {
-					atomic.AddInt64(&validCount, 1)
-					writeResult(result)
-				}
+	for _, ip := range ips {
+		for _, port := range ports {
+			if ctx.Err() != nil {
+				break
 			}
-		}(addr)
+			addr := fmt.Sprintf("%s:%d", ip, port)
+			wg.Add(1)
+			go func(a string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem; bar.Increment() }()
+				ip, portStr, _ := strings.Cut(a, ":")
+				port, _ := strconv.Atoi(portStr)
+				result := scanProxy(ctx, ip, port, finalTimeout)
+				if result.Scheme != "" {
+					key := fmt.Sprintf("%s:%d", result.IP, result.Port)
+					if _, loaded := seenProxies.LoadOrStore(key, true); !loaded {
+						atomic.AddInt64(&validCount, 1)
+						writeResult(result)
+					}
+				}
+			}(addr)
+		}
 	}
-
 	wg.Wait()
 	bar.Finish()
 	saveCountryCache()
@@ -346,12 +332,10 @@ type Result struct {
 // ==================== 主扫描逻辑 ====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
 	result := Result{IP: ip, Port: port}
-
 	for _, scheme := range protocols {
 		if ctx.Err() != nil {
 			return result
 		}
-
 		// 1. 匿名测试
 		ok, lat, exportIP := testProxy(ctx, scheme, ip, port, nil, timeout)
 		if ok && isPublicIP(exportIP) {
@@ -364,7 +348,6 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			}
 			return result
 		}
-
 		// 2. 弱密码爆破（仅 HTTP/SOCKS5）
 		if scheme == "socks4" {
 			continue
@@ -396,9 +379,7 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Auth, timeout time.Duration) (bool, int, string) {
 	addr := fmt.Sprintf("%s:%d", ip, port)
 	testURL := "http://ifconfig.me"
-
 	var dialer func(context.Context, string, string) (net.Conn, error)
-
 	switch scheme {
 	case "http":
 		u := &url.URL{Scheme: "http", Host: addr}
@@ -410,24 +391,19 @@ func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Aut
 			return false, 0, ""
 		}
 		dialer = d.(proxy.ContextDialer).DialContext
-
 	case "socks5":
 		d, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
 		if err != nil {
 			return false, 0, ""
 		}
 		dialer = d.(proxy.ContextDialer).DialContext
-
 	case "socks4":
 		dialer = socks4Dialer(addr, auth)
-
 	default:
 		return false, 0, ""
 	}
-
 	transport := &http.Transport{DialContext: dialer}
 	client := &http.Client{Transport: transport, Timeout: timeout}
-
 	start := time.Now()
 	req, _ := http.NewRequestWithContext(ctx, "GET", testURL, nil)
 	resp, err := client.Do(req)
@@ -435,11 +411,9 @@ func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Aut
 		return false, 0, ""
 	}
 	defer resp.Body.Close()
-
 	body, _ := io.ReadAll(resp.Body)
 	exportIP := strings.TrimSpace(string(body))
 	latency := int(time.Since(start).Milliseconds())
-
 	return resp.StatusCode == 200, latency, exportIP
 }
 
@@ -451,7 +425,6 @@ func socks4Dialer(addr string, auth *proxy.Auth) func(context.Context, string, s
 		if err != nil {
 			return nil, err
 		}
-
 		ip, portStr, _ := net.SplitHostPort(target)
 		port, _ := strconv.Atoi(portStr)
 		ipObj := net.ParseIP(ip)
@@ -464,14 +437,12 @@ func socks4Dialer(addr string, auth *proxy.Auth) func(context.Context, string, s
 			conn.Close()
 			return nil, fmt.Errorf("socks4 requires IPv4")
 		}
-
 		req := []byte{4, 1, byte(port >> 8), byte(port), ipBytes[0], ipBytes[1], ipBytes[2], ipBytes[3], 0}
 		if auth != nil && auth.User != "" {
 			req = append(req, []byte(auth.User)...)
 			req = append(req, 0)
 		}
 		req = append(req, 0)
-
 		if _, err := conn.Write(req); err != nil {
 			conn.Close()
 			return nil, err
@@ -511,13 +482,11 @@ func getCountry(ip string) string {
 	if v, ok := countryCache.Load(ip); ok {
 		return v.(string)
 	}
-
 	client := &http.Client{Timeout: 3 * time.Second}
 	urls := []string{
 		"http://ip-api.com/json/" + ip + "?fields=countryCode",
 		"https://ipinfo.io/" + ip + "/country",
 	}
-
 	for _, u := range urls {
 		resp, err := client.Get(u)
 		if err != nil {
@@ -525,7 +494,6 @@ func getCountry(ip string) string {
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-
 		code := ""
 		if strings.Contains(u, "json") {
 			var m map[string]interface{}
@@ -537,13 +505,11 @@ func getCountry(ip string) string {
 		} else {
 			code = strings.TrimSpace(strings.ToUpper(string(body)))
 		}
-
 		if regexp.MustCompile(`^[A-Z]{2}$`).MatchString(code) {
 			countryCache.Store(ip, code)
 			return code
 		}
 	}
-
 	countryCache.Store(ip, "XX")
 	return "XX"
 }
@@ -567,7 +533,7 @@ func saveCountryCache() {
 		m[k.(string)] = v.(string)
 		return true
 	})
-	data, _ := json.MarshalIndent(m, "", "  ")
+	data, _ := json.MarshalIndent(m, "", " ")
 	os.WriteFile(countryCacheFile, data, 0644)
 }
 
