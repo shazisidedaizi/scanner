@@ -58,7 +58,7 @@ func main() {
 	defaultStart := "157.254.32.0"
 	defaultEnd := "157.254.52.255"
 	defaultPort := "1080"
-	defaultThreads := 15000
+	defaultThreads := 1000
 	defaultTimeout := 5 * time.Second
 
 	// ==================== 交互式输入 ====================
