@@ -91,141 +91,113 @@ func main() {
 	defaultPort := "1080"
 	defaultThreads := 1000
 	defaultTimeout := 5 * time.Second
-	
-// ==================== 配置与输入 ====================
-var finalIPRange, finalPortInput, finalURL string
-var finalThreads int
-var finalTimeout time.Duration
 
-// 先赋值命令行参数
-finalURL = *urlInput
-if *ipRange != "" {
-	finalIPRange = *ipRange
-}
-if *portInput != "" {
-	finalPortInput = *portInput
-}
-if *threads > 0 {
-	finalThreads = *threads
-}
-if *timeout > 0 {
-	finalTimeout = *timeout
-}
+	// ==================== 变量声明 ====================
+	var finalIPRange, finalPortInput, finalURL string
+	var finalThreads int
+	var finalTimeout time.Duration
+	var addrs []string
+	var err error
 
-// ==================== URL 优先加载 ====================
-var addrs []string
-var err error
-if finalURL != "" {
-	fmt.Printf("[*] 正在从 URL 加载代理列表: %s\n", finalURL)
-	addrs, err = fetchAddrsFromURL(finalURL, defaultTimeout)
-	if err != nil || len(addrs) == 0 {
-		log.Printf("URL 加载失败或为空 → 回退到命令行/交互输入")
-		addrs = nil
+	// ==================== 命令行参数优先 ====================
+	finalURL = *urlInput
+	if *ipRange != "" {
+		finalIPRange = *ipRange
 	}
-}
-
-// ==================== 回退交互式输入 ====================
-if addrs == nil || len(addrs) == 0 { // 只有 URL 失败或未提供时才提示
-	if finalIPRange == "" {
-		finalIPRange = promptIPRange(defaultStart, defaultEnd)
+	if *portInput != "" {
+		finalPortInput = *portInput
 	}
-	// 生成 addrs
-	ports, _ := parsePorts(finalPortInput)
-	ipsChan, _ := ipGenerator(finalIPRange)
-	for ip := range ipsChan {
-		for _, port := range ports {
-			addrs = append(addrs, fmt.Sprintf("%s:%d", ip, port))
+	if *threads > 0 {
+		finalThreads = *threads
+	}
+	if *timeout > 0 {
+		finalTimeout = *timeout
+	}
+
+	// ==================== URL 优先加载 ====================
+	if finalURL != "" {
+		fmt.Printf("[*] 正在从 URL 加载代理列表: %s\n", finalURL)
+		addrs, err = fetchAddrsFromURL(finalURL, defaultTimeout)
+		if err != nil || len(addrs) == 0 {
+			log.Printf("URL 加载失败或为空 → 回退到交互式输入 IP 和端口")
+			addrs = nil
 		}
 	}
-}
-// 端口输入：仅在必要时提示
-if finalPortInput == "" {
-    if finalURL != "" && len(addrs) > 0 {
-        // URL 加载成功：检查是否有端口
-        if !hasPortInAddrs(addrs) {
-            finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
-        }
-    } else {
-        // 无 URL 或 URL 失败：必须输入端口
-        finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
-    }
-}
 
-// 自动提取端口用于显示（可选）
-if finalPortInput == "" && finalURL != "" && len(addrs) > 0 {
-    portsSet := make(map[string]bool)
-    for _, addr := range addrs {
-        if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
-            portsSet[port] = true
-        }
-    }
-    if len(portsSet) > 0 {
-        ports := make([]string, 0, len(portsSet))
-        for p := range portsSet {
-            ports = append(ports, p)
-        }
-        sort.Strings(ports)
-        finalPortInput = strings.Join(ports, ",")
-    }
-}
+	// ==================== 回退交互式输入 IP ====================
+	if addrs == nil || len(addrs) == 0 {
+		if finalIPRange == "" {
+			finalIPRange = promptIPRange(defaultStart, defaultEnd)
+		}
 
-// ==================== 智能端口输入 + 自动提取 ====================
-if finalPortInput == "" {
-    if finalURL != "" && len(addrs) > 0 {
-        // URL 加载成功：检查是否有端口
-        if !hasPortInAddrs(addrs) {
-            finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
-        }
-    } else {
-        // 无 URL 或 URL 失败：必须输入端口
-        finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
-    }
-}
+		ipsChan, _ := ipGenerator(finalIPRange)
+		for ip := range ipsChan {
+			addrs = append(addrs, ip) // 先只生成 IP，端口可能在下面补充
+		}
+	}
 
-// 自动提取端口用于显示（可选）
-if finalPortInput == "" && finalURL != "" && len(addrs) > 0 {
-    portsSet := make(map[string]bool)
-    for _, addr := range addrs {
-        if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
-            portsSet[port] = true
-        }
-    }
-    if len(portsSet) > 0 {
-        ports := make([]string, 0, len(portsSet))
-        for p := range portsSet {
-            ports = append(ports, p)
-        }
-        sort.Strings(ports)
-        finalPortInput = strings.Join(ports, ",")
-    }
-}
+	// ==================== 交互输入端口（必要时） ====================
+	needPortInput := false
+	for _, a := range addrs {
+		if _, _, err := net.SplitHostPort(a); err != nil {
+			needPortInput = true
+			break
+		}
+	}
 
-// ==================== 其他参数回退 ====================
-if finalThreads == 0 {
-    finalThreads = promptInt("最大并发数（默认: "+strconv.Itoa(defaultThreads)+"):", defaultThreads)
-}
-if finalTimeout == 0 {
-    finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
-}
-	
-// ==================== 输出配置摘要 ====================
-// 替换原来的 [*] 扫描范围 输出
-if finalURL != "" && len(addrs) > 0 {
-    fmt.Printf("[*] 地址来源: URL 加载（共 %d 条）\n", len(addrs))
-} else {
-    fmt.Printf("[*] 扫描范围: %s\n", finalIPRange)
-}
+	if needPortInput {
+		// 提示输入端口
+		if finalPortInput == "" {
+			finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+		}
+		ports, _ := parsePorts(finalPortInput)
 
-fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
-fmt.Printf("[*] 最大并发: %d\n", finalThreads)
-fmt.Printf("[*] 超时时间: %v\n", finalTimeout)
+		// 补充端口到 addrs
+		var newAddrs []string
+		for _, a := range addrs {
+			host, _, err := net.SplitHostPort(a)
+			if err != nil {
+				for _, p := range ports {
+					newAddrs = append(newAddrs, fmt.Sprintf("%s:%d", a, p))
+				}
+			} else {
+				newAddrs = append(newAddrs, a)
+			}
+		}
+		addrs = newAddrs
+	} else if finalPortInput == "" {
+		// URL 已包含端口且用户未指定端口，则自动提取用于显示
+		portsSet := make(map[string]bool)
+		for _, addr := range addrs {
+			_, port, _ := net.SplitHostPort(addr)
+			portsSet[port] = true
+		}
+		ports := make([]string, 0, len(portsSet))
+		for p := range portsSet {
+			ports = append(ports, p)
+		}
+		sort.Strings(ports)
+		finalPortInput = strings.Join(ports, ",")
+	}
 
-// 保留 URL 加载成功的提示（可选：可合并到上面的 if 中）
-if finalURL != "" && len(addrs) > 0 {
-    // 可以省略，因为上面已经输出了
-    // 或者保留更详细的信息
-}
-	
+	// ==================== 回退其他参数 ====================
+	if finalThreads == 0 {
+		finalThreads = promptInt("最大并发数（默认: "+strconv.Itoa(defaultThreads)+"):", defaultThreads)
+	}
+	if finalTimeout == 0 {
+		finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
+	}
+
+	// ==================== 输出配置摘要 ====================
+	if finalURL != "" && len(addrs) > 0 {
+		fmt.Printf("[*] 地址来源: URL 加载（共 %d 条）\n", len(addrs))
+	} else {
+		fmt.Printf("[*] 扫描范围: %s\n", finalIPRange)
+	}
+	fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
+	fmt.Printf("[*] 最大并发: %d\n", finalThreads)
+	fmt.Printf("[*] 超时时间: %v\n", finalTimeout)
+
 	// ==================== 加载弱密码 ====================
 	weakPasswords = loadWeakPasswords("weak_passwords.txt")
 
