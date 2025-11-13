@@ -84,7 +84,25 @@ func main() {
     timeout := flag.Duration("timeout", 0, "Timeout per request (e.g. 5s)")
     urlInput := flag.String("url", "", "URL to fetch IP:port list from")
     flag.Parse()
+	
+	// ==================== 修复2：加载国家缓存 ====================
+    loadCountryCache()
+	
+	// ==================== 修复3：初始化日志文件 ====================
+    logFile, err := os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+    if err != nil {
+        log.Fatal(err) // 此时 log 输出到 stderr，正常
+    }
+    defer logFile.Close()
+	
+	// 设置多路输出：终端 + 文件
+    multiWriter := io.MultiWriter(os.Stdout, logFile)
+    log.SetOutput(multiWriter)
+    log.SetFlags(log.LstdFlags)
 
+    // 现在日志系统已就绪，可以安全打印
+    log.Printf("[*] 扫描开始: %s", time.Now().Format("2006-01-02 15:04:05"))
+	
     // ==================== 默认值 ====================
     defaultStart := "157.254.32.0"
     defaultEnd := "157.254.52.255"
@@ -97,8 +115,8 @@ func main() {
     var finalThreads int
     var finalTimeout time.Duration
     var addrs []string
-    var detailFile, validFile *os.File
-	var validCount int64 
+    //var detailFile, validFile *os.File
+	//var validCount int64 
 
     // ==================== 命令行参数优先 ====================
     finalURL = *urlInput
