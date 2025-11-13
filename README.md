@@ -41,9 +41,13 @@ sed -i '/go\/bin/d' ~/.bashrc ~/.profile 2>/dev/null
 #添加环境变量到 .bashrc
 
 cat >> ~/.bashrc <<'EOF'
+
 export PATH=/usr/local/go/bin:$PATH
+
 export GOPATH=$HOME/go
+
 export GOBIN=$GOPATH/bin
+
 EOF
 
 #立即生效
