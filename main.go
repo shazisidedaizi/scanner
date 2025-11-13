@@ -23,18 +23,26 @@ import (
 
 	"github.com/cheggaaa/pb/v3"
 	"golang.org/x/net/proxy"
-	// "golang.org/x/sys/unix"
+	"golang.org/x/time/rate"
 )
 
 // ==================== 配置与常量 ====================
 var (
 	weakPasswords = [][2]string{
-		{"admin", "admin"}, {"root", "root"}, {"user", "user"}, {"123", "123"},
-		{"proxy", "proxy"}, {"socks5", "socks5"}, {"123456", "123456"}, {"test", "test"},
-		{"guest", "guest"}, {"", "admin"}, {"admin", ""}, {"password", "password"},
-		{"socks", "socks"}, {"demo", "demo"}, {"hello", "hello"}, {"qwerty", "qwerty"},
+		var (
+weakPasswords = [][2]string{
+    {"123456", "123456"},{"password", "password"},{"admin", "admin"},{"admin", "123456"},            
+    {"root", "root"},{"root", "123456"},{"123456789", "123456789"}, {"qwerty", "qwerty"},
+    {"12345", "12345"},{"12345678", "12345678"},{"111111", "111111"},{"user", "user"}, 
+    {"user", "password"},{"123", "123"},{"proxy", "proxy"},{"socks5", "socks5"},{"1234567", "1234567"},
+    {"iloveyou", "iloveyou"},{"123123", "123123"},{"000000", "000000"},{"welcome", "welcome"},{"secret", "secret"},
+    {"dragon", "dragon"},{"monkey", "monkey"},{"football", "football"},{"letmein", "letmein"},{"sunshine", "sunshine"},
+    {"baseball", "baseball"},{"princess", "princess"},{"admin123", "admin123"},{"superman", "superman"},{"guest", "guest"},
+    {"", "123456"},{"admin", ""},{"", "admin"},{"test", "test"},{"demo", "demo"},           
+}
+)
 	}
-	protocols        = []string{"http", "socks5", "socks4"} // https 不支持，socks4 后置
+	protocols        = []string{"socks5", "http", "socks4"} // 调整顺序：socks5 先，更常见
 	countryCache     sync.Map                               // ip -> countryCode
 	validCount       int64
 	seenProxies      sync.Map                               // ip:port -> struct{}
@@ -43,7 +51,29 @@ var (
 	detailMu         sync.Mutex
 	validMu          sync.Mutex
 	countryCacheFile = "country_cache.json"
+	limiter          = rate.NewLimiter(rate.Every(time.Second/100), 100) // 每秒100请求限速
 )
+
+// ==================== 加载弱密码函数（放置在这里：main 函数之前） ====================
+func loadWeakPasswords(file string) [][2]string {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		log.Printf("Warning: failed to load weak passwords file: %v", err)
+		return weakPasswords // 回退到默认
+	}
+	var list [][2]string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 {
+			list = append(list, [2]string{parts[0], parts[1]})
+		}
+	}
+	return list
+}
 
 // ==================== 主函数 ====================
 func main() {
@@ -101,7 +131,7 @@ func main() {
 	fmt.Printf("[*] 超时时间: %v\n\n", finalTimeout)
 
 	// ==================== 解析 IP 和端口 ====================
-	ips, err := parseIPRange(finalIPRange)
+	ipsChan, err := ipGenerator(finalIPRange)
 	if err != nil {
 		log.Fatalf("IP range error: %v", err)
 	}
@@ -110,9 +140,9 @@ func main() {
 		log.Fatalf("Port error: %v", err)
 	}
 
-	// 计算总数用于进度条
-	total := len(ips) * len(ports)
-	fmt.Printf("[*] IPs: %d, Ports: %d, Total: %d\n", len(ips), len(ports), total)
+	// 进度条：由于使用生成器，无法预计算总数，使用无限模式
+	bar := pb.StartNew(0) // 或预估总数，如果能计算
+	bar.Set("prefix", "[*] Scanning: ")
 
 	// ==================== 初始化日志 ====================
 	logFile, err := os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -141,7 +171,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	bar := pb.StartNew(total)
 	bar.SetWriter(multiWriter)
 	go func() {
 		<-c
@@ -157,7 +186,7 @@ func main() {
 	sem := make(chan struct{}, finalThreads)
 	var wg sync.WaitGroup
 
-	for _, ip := range ips {
+	for ip := range ipsChan {
 		for _, port := range ports {
 			if ctx.Err() != nil {
 				break
@@ -225,41 +254,30 @@ func promptIPRange(start, end string) string {
 	return s + "-" + e
 }
 
-// ==================== 解析函数 ====================
-func parseIPRange(r string) ([]string, error) {
+// ==================== IP 生成器 ====================
+func ipGenerator(r string) (<-chan string, error) {
 	if strings.Contains(r, "/") {
-		return parseCIDR(r)
+		return cidrGenerator(r)
 	}
-	return parseIPRangeDash(r)
+	return rangeDashGenerator(r)
 }
 
-func parseCIDR(cidr string) ([]string, error) {
+func cidrGenerator(cidr string) (<-chan string, error) {
 	_, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return nil, err
 	}
-	var ips []string
-	for ip := ipnet.IP.Mask(ipnet.Mask); ipnet.Contains(ip); incIP(ip) {
-		if len(ips) > 0 { // 跳过网络地址
-			ips = append(ips, ip.String())
+	ch := make(chan string)
+	go func() {
+		defer close(ch)
+		for ip := copyIP(ipnet.IP.Mask(ipnet.Mask)); ipnet.Contains(ip); incIP(ip) {
+			ch <- ip.String()
 		}
-		if len(ips) > 1 && isBroadcast(ipnet, ip) {
-			break
-		}
-	}
-	return ips, nil
+	}()
+	return ch, nil
 }
 
-func isBroadcast(ipnet *net.IPNet, ip net.IP) bool {
-	broadcast := make(net.IP, len(ipnet.IP))
-	copy(broadcast, ipnet.IP)
-	for i := range ipnet.Mask {
-		broadcast[i] |= ^ipnet.Mask[i]
-	}
-	return broadcast.Equal(ip)
-}
-
-func parseIPRangeDash(r string) ([]string, error) {
+func rangeDashGenerator(r string) (<-chan string, error) {
 	parts := strings.Split(r, "-")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid format")
@@ -269,34 +287,17 @@ func parseIPRangeDash(r string) ([]string, error) {
 	if start == nil || end == nil {
 		return nil, fmt.Errorf("invalid IP")
 	}
-	var ips []string
-	for ip := copyIP(start); compareIP(ip, end) <= 0; ip = incIP(ip) {
-		ips = append(ips, ip.String())
-	}
-	return ips, nil
-}
-
-func copyIP(ip net.IP) net.IP {
-	dup := make(net.IP, len(ip))
-	copy(dup, ip)
-	return dup
-}
-
-func incIP(ip net.IP) net.IP {
-	ip = copyIP(ip)
-	for j := len(ip) - 1; j >= 0; j-- {
-		ip[j]++
-		if ip[j] > 0 {
-			break
+	ch := make(chan string)
+	go func() {
+		defer close(ch)
+		for ip := copyIP(start); compareIP(ip, end) <= 0; incIP(ip) {
+			ch <- ip.String()
 		}
-	}
-	return ip
+	}()
+	return ch, nil
 }
 
-func compareIP(a, b net.IP) int {
-	return strings.Compare(a.String(), b.String())
-}
-
+// ==================== 端口解析 ====================
 func parsePorts(input string) ([]int, error) {
 	var ports []int
 	for _, p := range strings.Fields(input) {
@@ -331,6 +332,13 @@ type Result struct {
 
 // ==================== 主扫描逻辑 ====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
+	// 先快速检查端口是否开放
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), timeout/2)
+	if err != nil {
+		return Result{}
+	}
+	conn.Close()
+
 	result := Result{IP: ip, Port: port}
 	for _, scheme := range protocols {
 		if ctx.Err() != nil {
@@ -377,6 +385,10 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 
 // ==================== 协议测试 ====================
 func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Auth, timeout time.Duration) (bool, int, string) {
+	if err := limiter.Wait(ctx); err != nil {
+		return false, 0, ""
+	}
+
 	addr := fmt.Sprintf("%s:%d", ip, port)
 	testURL := "http://ifconfig.me"
 	var dialer func(context.Context, string, string) (net.Conn, error)
@@ -560,4 +572,23 @@ func writeResult(r Result) {
 	}
 	fmt.Fprintln(validFile, fmtStr)
 	validMu.Unlock()
+}
+
+func copyIP(ip net.IP) net.IP {
+	dup := make(net.IP, len(ip))
+	copy(dup, ip)
+	return dup
+}
+
+func incIP(ip net.IP) {
+	for j := len(ip) - 1; j >= 0; j-- {
+		ip[j]++
+		if ip[j] > 0 {
+			break
+		}
+	}
+}
+
+func compareIP(a, b net.IP) int {
+	return strings.Compare(a.String(), b.String())
 }
