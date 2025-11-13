@@ -49,13 +49,16 @@ var (
 	validCount  int64
 	seenProxies sync.Map
 
-	// 全局文件句柄（不要在 main 中重复声明）
+	// 全局文件句柄
 	detailFile *os.File
 	validFile  *os.File
 	logFile    *os.File
 
 	countryCacheFile = "country_cache.json"
 	limiter          = rate.NewLimiter(rate.Every(time.Second/100), 100)
+
+	detailMu sync.Mutex
+	validMu  sync.Mutex
 )
 
 // ==================== 加载弱密码函数 ====================
@@ -97,9 +100,8 @@ type scanTask struct {
 	Port int
 }
 
-// ==================== 主函数（完全替换）================
+// ==================== 主函数 ====================
 func main() {
-	// ==================== 命令行参数 ====================
 	ipRange := flag.String("ip-range", "", "IP range: 192.168.1.1-192.168.1.255 or CIDR")
 	portInput := flag.String("port", "", "Ports: 1080 / 80 8080 / 1-65535 or comma/space separated")
 	threads := flag.Int("threads", 0, "Max concurrent connections")
@@ -107,52 +109,31 @@ func main() {
 	urlInput := flag.String("url", "", "URL to fetch IP:port list from")
 	flag.Parse()
 
-	// ==================== 修复2：加载国家缓存 ====================
 	loadCountryCache()
 	defer saveCountryCache()
 
-	// ==================== 修复3：初始化日志文件 ====================
 	var err error
 	logFile, err = os.OpenFile("scan.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer logFile.Close()
-
-	// 设置多路输出：终端 + 文件
-	multiWriter := io.MultiWriter(os.Stdout, logFile)
-	log.SetOutput(multiWriter)
+	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
 	log.SetFlags(log.LstdFlags)
 	log.Printf("[*] 扫描开始: %s", time.Now().Format("2006-01-02 15:04:05"))
 
-	// ==================== 默认值 ====================
 	defaultStart := "157.254.32.0"
 	defaultEnd := "157.254.52.255"
 	defaultPort := "1080"
 	defaultThreads := 1000
 	defaultTimeout := 5 * time.Second
 
-	// ==================== 变量声明 ====================
-	var finalIPRange, finalPortInput, finalURL string
-	var finalThreads int
-	var finalTimeout time.Duration
+	finalIPRange := *ipRange
+	finalPortInput := *portInput
+	finalURL := *urlInput
+	finalThreads := *threads
+	finalTimeout := *timeout
 
-	// ==================== 命令行参数优先 ====================
-	finalURL = *urlInput
-	if *ipRange != "" {
-		finalIPRange = *ipRange
-	}
-	if *portInput != "" {
-		finalPortInput = *portInput
-	}
-	if *threads > 0 {
-		finalThreads = *threads
-	}
-	if *timeout > 0 {
-		finalTimeout = *timeout
-	}
-
-	// ==================== 回退其他参数 ====================
 	if finalThreads == 0 {
 		finalThreads = promptInt("最大并发数（默认: "+strconv.Itoa(defaultThreads)+"):", defaultThreads)
 	}
@@ -160,10 +141,8 @@ func main() {
 		finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
 	}
 
-	// ==================== 加载弱密码 ====================
 	weakPasswords = loadWeakPasswords("weak_passwords.txt")
 
-	// ==================== 初始化输出文件 ====================
 	detailFile, err = os.OpenFile("result_detail.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		log.Fatal("打开 result_detail.txt 失败: ", err)
@@ -175,12 +154,10 @@ func main() {
 	defer detailFile.Close()
 	defer validFile.Close()
 
-	// ==================== 输出配置摘要 ====================
 	log.Printf("[*] 最大并发: %d", finalThreads)
 	log.Printf("[*] 超时时间: %v", finalTimeout)
 
-	// ==================== 任务通道 + 上下文 ====================
-	taskChan := make(chan scanTask, finalThreads*2) // 缓冲避免阻塞
+	taskChan := make(chan scanTask, finalThreads*2)
 	ctx, cancel := context.WithCancel(context.Background())
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -190,17 +167,13 @@ func main() {
 		cancel()
 	}()
 
-	// ==================== 进度条（动态总数）================
 	bar := pb.New(0)
-	bar.SetWriter(multiWriter)
+	bar.SetWriter(io.MultiWriter(os.Stdout, logFile))
 	bar.Set("prefix", "Scanning ")
 	bar.Start()
 
-	// ==================== 启动任务生成器（生产者）================
 	go func() {
 		defer close(taskChan)
-
-		// --- 1. URL 模式：流式解析 ---
 		if finalURL != "" {
 			ips, ports, err := fetchAddrsFromURLStream(finalURL, defaultTimeout)
 			if err != nil {
@@ -219,7 +192,6 @@ func main() {
 			}
 		}
 
-		// --- 2. IP 范围模式 ---
 		if finalIPRange == "" {
 			finalIPRange = promptIPRange(defaultStart, defaultEnd)
 		}
@@ -229,13 +201,11 @@ func main() {
 			return
 		}
 
-		// --- 3. 端口解析 ---
 		if finalPortInput == "" {
 			finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
 		}
 		ports, _ := parsePorts(finalPortInput)
 
-		// --- 4. 流式组合 IP × 端口 ---
 		for ip := range ipChan {
 			for _, port := range ports {
 				select {
@@ -247,16 +217,14 @@ func main() {
 		}
 	}()
 
-	// ==================== 扫描主逻辑（消费者）================
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, finalThreads)
 	totalScanned := int64(0)
 
 	for task := range taskChan {
-		// 动态更新进度条总数
 		current := atomic.AddInt64(&totalScanned, 1)
 		if current%1000 == 1 || current == 1 {
-			bar.Total = float64(current + 1000) // 预估，避免频繁更新
+			bar.Total = float64(current + 1000)
 		}
 
 		wg.Add(1)
@@ -288,21 +256,18 @@ func main() {
 	log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", atomic.LoadInt64(&validCount))
 }
 
-// ==================== 从 URL 流式加载 IP:PORT ====================
+// ==================== 从 URL 流式加载 ====================
 func fetchAddrsFromURLStream(u string, timeout time.Duration) ([]string, []int, error) {
 	log.Printf("[*] 正在从 URL 流式加载代理列表: %s", u)
 	client := &http.Client{
 		Timeout:       timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	resp, err := client.Get(u)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
@@ -317,9 +282,6 @@ func fetchAddrsFromURLStream(u string, timeout time.Duration) ([]string, []int, 
 			continue
 		}
 		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
 		ipStr := strings.TrimSpace(parts[0])
 		portStr := strings.TrimSpace(parts[1])
 		port, err := strconv.Atoi(portStr)
@@ -342,7 +304,6 @@ func fetchAddrsFromURLStream(u string, timeout time.Duration) ([]string, []int, 
 	if err := scanner.Err(); err != nil {
 		return nil, nil, err
 	}
-
 	log.Printf("[*] URL 加载完成: %d 个 IP, %d 个端口", len(ips), len(ports))
 	return ips, ports, nil
 }
@@ -388,6 +349,8 @@ func ipGenerator(r string) (<-chan string, error) {
 	}
 	return rangeDashGenerator(r)
 }
+
+// CIDR 生成器
 func cidrGenerator(cidr string) (<-chan string, error) {
 	_, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -402,16 +365,19 @@ func cidrGenerator(cidr string) (<-chan string, error) {
 	}()
 	return ch, nil
 }
+
+// Dash 范围生成器（安全版）
 func rangeDashGenerator(r string) (<-chan string, error) {
 	parts := strings.Split(r, "-")
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid format")
+		return nil, fmt.Errorf("invalid IP range format")
 	}
-	start := net.ParseIP(parts[0]).To4()
-	end := net.ParseIP(parts[1]).To4()
+	start := net.ParseIP(strings.TrimSpace(parts[0])).To4()
+	end := net.ParseIP(strings.TrimSpace(parts[1])).To4()
 	if start == nil || end == nil {
-		return nil, fmt.Errorf("invalid IP")
+		return nil, fmt.Errorf("invalid IPv4 address")
 	}
+
 	ch := make(chan string)
 	go func() {
 		defer close(ch)
@@ -422,43 +388,80 @@ func rangeDashGenerator(r string) (<-chan string, error) {
 	return ch, nil
 }
 
-// ==================== 端口解析 ====================
+// ==================== 安全端口解析 ====================
 func parsePorts(input string) ([]int, error) {
 	var ports []int
-	// 支持 "80,1080 8000-8005" 这样的混合格式
 	input = strings.ReplaceAll(input, ",", " ")
 	for _, p := range strings.Fields(input) {
 		if strings.Contains(p, "-") {
 			r := strings.Split(p, "-")
-			s, _ := strconv.Atoi(r[0])
-			e, _ := strconv.Atoi(r[1])
-			if s < 1 {
-				s = 1
+			if len(r) != 2 {
+				continue
 			}
-			if e > 65535 {
-				e = 65535
+			s, err := strconv.Atoi(strings.TrimSpace(r[0]))
+			if err != nil || s < 1 {
+				continue
+			}
+			e, err := strconv.Atoi(strings.TrimSpace(r[1]))
+			if err != nil || e > 65535 {
+				continue
+			}
+			if s > e {
+				s, e = e, s
 			}
 			for i := s; i <= e; i++ {
 				ports = append(ports, i)
 			}
 		} else {
-			port, _ := strconv.Atoi(p)
-			if port > 0 && port <= 65535 {
-				ports = append(ports, port)
+			port, err := strconv.Atoi(strings.TrimSpace(p))
+			if err != nil || port < 1 || port > 65535 {
+				continue
 			}
+			ports = append(ports, port)
 		}
 	}
 	return ports, nil
 }
 
+// ==================== IP 辅助函数 ====================
+func copyIP(ip net.IP) net.IP {
+	dup := make(net.IP, len(ip))
+	copy(dup, ip)
+	return dup
+}
+func incIP(ip net.IP) {
+	for j := len(ip) - 1; j >= 0; j-- {
+		ip[j]++
+		if ip[j] > 0 {
+			break
+		}
+	}
+}
+func compareIP(a, b net.IP) int {
+	a = a.To4()
+	b = b.To4()
+	if a == nil || b == nil {
+		return strings.Compare(a.String(), b.String())
+	}
+	for i := 0; i < 4; i++ {
+		if a[i] < b[i] {
+			return -1
+		} else if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
 // ==================== 主扫描逻辑 ====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
-	// 先快速检查端口是否开放
+	// 端口快速连通性检测
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), timeout/2)
 	if err != nil {
 		return Result{}
 	}
 	conn.Close()
+
 	result := Result{IP: ip, Port: port}
 	for _, scheme := range protocols {
 		if ctx.Err() != nil {
@@ -510,52 +513,79 @@ func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Aut
 	}
 	addr := fmt.Sprintf("%s:%d", ip, port)
 	testURL := "http://ifconfig.me" // 可按需替换
-	var dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	switch scheme {
 	case "http":
+		// 使用 HTTP 代理（通过 Transport.Proxy）
 		u := &url.URL{Scheme: "http", Host: addr}
 		if auth != nil {
 			u.User = url.UserPassword(auth.User, auth.Password)
 		}
-		d, err := proxy.FromURL(u, proxy.Direct)
-		if err != nil {
+		transport := &http.Transport{
+			Proxy: http.ProxyURL(u),
+			// 默认使用系统 dialer, but set idle/timeouts via client
+			DialContext: (&net.Dialer{Timeout: timeout}).DialContext,
+		}
+		client := &http.Client{Transport: transport, Timeout: timeout}
+		start := time.Now()
+		req, _ := http.NewRequestWithContext(ctx, "GET", testURL, nil)
+		resp, err := client.Do(req)
+		if err != nil || resp == nil {
 			return false, 0, ""
 		}
-		dialContext = dialerToDialContext(d)
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		exportIP := strings.TrimSpace(string(body))
+		latency := int(time.Since(start).Milliseconds())
+		return resp.StatusCode == 200, latency, exportIP
+
 	case "socks5":
 		d, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
 		if err != nil {
 			return false, 0, ""
 		}
-		dialContext = dialerToDialContext(d)
+		dialContext := dialerToDialContext(d)
+		transport := &http.Transport{
+			DialContext: dialContext,
+		}
+		client := &http.Client{Transport: transport, Timeout: timeout}
+		start := time.Now()
+		req, _ := http.NewRequestWithContext(ctx, "GET", testURL, nil)
+		resp, err := client.Do(req)
+		if err != nil || resp == nil {
+			return false, 0, ""
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		exportIP := strings.TrimSpace(string(body))
+		latency := int(time.Since(start).Milliseconds())
+		return resp.StatusCode == 200, latency, exportIP
+
 	case "socks4":
-		dialContext = socks4Dialer(addr, auth)
+		dialContext := socks4Dialer(addr, auth)
+		transport := &http.Transport{
+			DialContext: dialContext,
+		}
+		client := &http.Client{Transport: transport, Timeout: timeout}
+		start := time.Now()
+		req, _ := http.NewRequestWithContext(ctx, "GET", testURL, nil)
+		resp, err := client.Do(req)
+		if err != nil || resp == nil {
+			return false, 0, ""
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		exportIP := strings.TrimSpace(string(body))
+		latency := int(time.Since(start).Milliseconds())
+		return resp.StatusCode == 200, latency, exportIP
 	default:
 		return false, 0, ""
 	}
-
-	transport := &http.Transport{
-		DialContext: dialContext,
-	}
-	client := &http.Client{Transport: transport, Timeout: timeout}
-	start := time.Now()
-	req, _ := http.NewRequestWithContext(ctx, "GET", testURL, nil)
-	resp, err := client.Do(req)
-	if err != nil || resp == nil {
-		return false, 0, ""
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	exportIP := strings.TrimSpace(string(body))
-	latency := int(time.Since(start).Milliseconds())
-	return resp.StatusCode == 200, latency, exportIP
 }
 
 // 把 proxy.Dialer 包装成 DialContext
 func dialerToDialContext(d proxy.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		// proxy.Dialer 的接口是 Dial(network, addr string) (net.Conn, error)
 		conn, err := d.Dial(network, addr)
 		if err != nil {
 			return nil, fmt.Errorf("proxy dial failed: %w", err)
@@ -642,8 +672,8 @@ func getCountry(ip string) string {
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
-    		resp.Body.Close()
-    		continue
+			resp.Body.Close()
+			continue
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -685,13 +715,10 @@ func saveCountryCache() {
 		return true
 	})
 	data, _ := json.MarshalIndent(m, "", " ")
-	os.WriteFile(countryCacheFile, data, 0644)
+	_ = os.WriteFile(countryCacheFile, data, 0644)
 }
 
 // ==================== 输出 ====================
-var detailMu sync.Mutex
-var validMu sync.Mutex
-
 func writeResult(r Result) {
 	detailMu.Lock()
 	status := "OK"
@@ -712,21 +739,4 @@ func writeResult(r Result) {
 	}
 	fmt.Fprintln(validFile, fmtStr)
 	validMu.Unlock()
-}
-
-func copyIP(ip net.IP) net.IP {
-	dup := make(net.IP, len(ip))
-	copy(dup, ip)
-	return dup
-}
-func incIP(ip net.IP) {
-	for j := len(ip) - 1; j >= 0; j-- {
-		ip[j]++
-		if ip[j] > 0 {
-			break
-		}
-	}
-}
-func compareIP(a, b net.IP) int {
-	return strings.Compare(a.String(), b.String())
 }
