@@ -138,18 +138,80 @@ if addrs == nil || len(addrs) == 0 { // 只有 URL 失败或未提供时才提�
 		}
 	}
 }
-
-// 端口/线程/超时仍然可以独立回退（URL 成功也可能没提供命令行参数）
+// 端口输入：仅在必要时提示
 if finalPortInput == "" {
-	finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+    if finalURL != "" && len(addrs) > 0 {
+        // URL 加载成功：检查是否有端口
+        if !hasPortInAddrs(addrs) {
+            finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+        }
+    } else {
+        // 无 URL 或 URL 失败：必须输入端口
+        finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+    }
 }
+
+// 自动提取端口用于显示（可选）
+if finalPortInput == "" && finalURL != "" && len(addrs) > 0 {
+    portsSet := make(map[string]bool)
+    for _, addr := range addrs {
+        if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+            portsSet[port] = true
+        }
+    }
+    if len(portsSet) > 0 {
+        ports := make([]string, 0, len(portsSet))
+        for p := range portsSet {
+            ports = append(ports, p)
+        }
+        sort.Strings(ports)
+        finalPortInput = strings.Join(ports, ",")
+    }
+}
+
+// ==================== 智能端口输入 + 自动提取 ====================
+// ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ←
+// 【把你提供的代码放在这里！】
+// ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ←
+
+if finalPortInput == "" {
+    if finalURL != "" && len(addrs) > 0 {
+        // URL 加载成功：检查是否有端口
+        if !hasPortInAddrs(addrs) {
+            finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+        }
+    } else {
+        // 无 URL 或 URL 失败：必须输入端口
+        finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+    }
+}
+
+// 自动提取端口用于显示（可选）
+if finalPortInput == "" && finalURL != "" && len(addrs) > 0 {
+    portsSet := make(map[string]bool)
+    for _, addr := range addrs {
+        if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+            portsSet[port] = true
+        }
+    }
+    if len(portsSet) > 0 {
+        ports := make([]string, 0, len(portsSet))
+        for p := range portsSet {
+            ports = append(ports, p)
+        }
+        sort.Strings(ports)
+        finalPortInput = strings.Join(ports, ",")
+    }
+}
+
+// ==================== 其他参数回退 ====================
 if finalThreads == 0 {
-	finalThreads = promptInt("最大并发数（默认: "+strconv.Itoa(defaultThreads)+"):", defaultThreads)
+    finalThreads = promptInt("最大并发数（默认: "+strconv.Itoa(defaultThreads)+"):", defaultThreads)
 }
 if finalTimeout == 0 {
-	finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
+    finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
 }
-
+	
 // ==================== 输出配置摘要 ====================
 // 替换原来的 [*] 扫描范围 输出
 if finalURL != "" && len(addrs) > 0 {
