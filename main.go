@@ -120,14 +120,26 @@ if finalURL != "" {
 	addrs, err = fetchAddrsFromURL(finalURL, defaultTimeout)
 	if err != nil || len(addrs) == 0 {
 		log.Printf("URL 加载失败或为空 → 回退到命令行/交互输入")
-		finalURL = ""
+		addrs = nil
 	}
 }
 
 // ==================== 回退交互式输入 ====================
-if finalIPRange == "" {
-	finalIPRange = promptIPRange(defaultStart, defaultEnd)
+if addrs == nil || len(addrs) == 0 { // 只有 URL 失败或未提供时才提示
+	if finalIPRange == "" {
+		finalIPRange = promptIPRange(defaultStart, defaultEnd)
+	}
+	// 生成 addrs
+	ports, _ := parsePorts(finalPortInput)
+	ipsChan, _ := ipGenerator(finalIPRange)
+	for ip := range ipsChan {
+		for _, port := range ports {
+			addrs = append(addrs, fmt.Sprintf("%s:%d", ip, port))
+		}
+	}
 }
+
+// 端口/线程/超时仍然可以独立回退（URL 成功也可能没提供命令行参数）
 if finalPortInput == "" {
 	finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
 }
@@ -143,7 +155,7 @@ fmt.Printf("\n[*] 扫描范围: %s\n", finalIPRange)
 fmt.Printf("[*] 端口配置: %s\n", finalPortInput)
 fmt.Printf("[*] 最大并发: %d\n", finalThreads)
 fmt.Printf("[*] 超时时间: %v\n", finalTimeout)
-if finalURL != "" {
+if finalURL != "" && len(addrs) > 0 {
 	fmt.Printf("[*] 已从 URL 加载代理列表，共 %d 条\n", len(addrs))
 }
 
