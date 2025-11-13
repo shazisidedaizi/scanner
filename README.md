@@ -99,10 +99,6 @@ pkill scanner
 
 ###  步骤 5：查看实时进度
 
-#实时查看扫描进度（进度条）
-
-tail -f /dev/null              程序自带进度条，无需 tail
-
 #程序运行时会显示：
 
 [*] IPs: 5120, Ports: 1, Total: 5120
