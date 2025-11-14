@@ -58,7 +58,9 @@ source ~/.bashrc
 
 go version
 
-#输出应为：go version go1.24.9 linux/amd64
+#输出应为：
+
+go version go1.24.9 linux/amd64
 
 ###  步骤 3：克隆项目并编译
 #克隆仓库
@@ -82,22 +84,15 @@ upx --best --lzma scanner
 ls -lh scanner
 
 ###  步骤 4：运行扫描（交互式输入
+直接运行(不能断开终端链接
 
 ./scanner
 
-程序会提示输入：
-
-请输入起始 IP（默认: 157.254.32.0）:
-
-请输入结束 IP（默认: 157.254.52.255）:
-
-请输入端口（默认: 1080）:
-
-命令行后台运行扫描（命令行参数，一键启动
+#命令行后台运行扫描（参数都可以自定义，推荐选项
 
 nohup ./scanner -ip-range 157.254.32.0-157.254.52.255 -port 1080 -threads 1000 -timeout 5s > scan.log 2>&1 &
 
-通过url获取ip进行扫描
+#通过url获取ip进行扫描
 
 ./scanner -url=https://raw.githubusercontent.com/avotcorg/scamnet/refs/heads/main/demo.txt -threads=1000 -timeout=5s
 
