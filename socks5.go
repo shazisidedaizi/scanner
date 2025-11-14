@@ -50,11 +50,7 @@ var builtInURLs = []string{
     // ProxyScrape (updates every minute, TXT format)
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=10000&country=all",
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all",
-
-    // free-proxy-list.net (updates every 30 minutes, API TXT)
-    "https://www.free-proxy-list.net/",
-    "https://api.proxylist.download/socks5?limit=500" 	 // SOCKS5 proxies
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all"
 }
 
 // ==================== 结果结构 ====================
