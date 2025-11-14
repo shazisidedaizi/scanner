@@ -586,12 +586,18 @@ func queryCountry(ip string) string {
 
 // ==================== 写入结果（实时 flush） ====================
 func writeResult(r Result) {
+	if r.Auth == "" {
+		// 没有账号密码，跳过写入
+		return
+	}
+
 	detailMu.Lock()
 	fmt.Fprintf(detailWriter, "%s:%d [%s] %s %dms %s\n", r.IP, r.Port, r.Scheme, r.Auth, r.Latency, r.Country)
 	detailMu.Unlock()
 
 	validMu.Lock()
-	fmt.Fprintf(validWriter, "%s:%d\n", r.IP, r.Port)
+	// 将有效节点写为 socks5://user:pass@ip:port
+	fmt.Fprintf(validWriter, "socks5://%s@%s:%d\n", r.Auth, r.IP, r.Port)
 	validMu.Unlock()
 
 	atomic.AddInt64(&validCount, 1)
