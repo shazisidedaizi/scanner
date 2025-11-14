@@ -464,6 +464,7 @@ func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time
 	if err != nil {
     	return false, 0, ""
 	}
+	lines := strings.Split(string(buf), "\n")
 	if len(lines) == 0 {
     	return false, 0, ""
 	}
@@ -479,11 +480,25 @@ func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time
 var defaultTransport = &http.Transport{
 	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 }
-func testInternetAccess(dialer proxy.Dialer, timeout time.Duration) bool {
+// ==================== 外网访问检测 ====================
+var defaultTransport = &http.Transport{
+    TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+}
+
+func testInternetAccess(ctx context.Context, dialer proxy.Dialer, timeout time.Duration) bool {
+    // 克隆默认 transport
     transport := defaultTransport.Clone()
-    transport.Dial = dialer.Dial
-    transport.ForceAttemptHTTP2 = false // 防止 Socks5 HTTP2 卡死
-    client := &http.Client{Timeout: timeout, Transport: transport}
+    
+    // 设置代理 dialer（推荐用 DialContext）
+    transport.DialContext = func(c context.Context, network, addr string) (net.Conn, error) {
+        return dialer.Dial(network, addr)
+    }
+
+    // 创建 HTTP 客户端
+    client := &http.Client{
+        Timeout:   timeout,
+        Transport: transport,
+    }
 
     testURLs := []string{
         "https://www.google.com/generate_204",
@@ -492,13 +507,18 @@ func testInternetAccess(dialer proxy.Dialer, timeout time.Duration) bool {
     }
 
     for i, u := range testURLs {
-        resp, err := client.Get(u)
+        req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+        if err != nil {
+            log.Printf("[DEBUG] 创建请求失败（URL %d: %s）: %v", i+1, u, err)
+            continue
+        }
+
+        resp, err := client.Do(req)
         if err != nil {
             log.Printf("[DEBUG] 访问失败（URL %d: %s）: %v", i+1, u, err)
             continue
         }
 
-        // 必须立刻关闭 Body，而不是 defer！避免 FD 泄露
         body, readErr := io.ReadAll(resp.Body)
         resp.Body.Close()
 
