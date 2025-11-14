@@ -478,10 +478,6 @@ func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time
 
 // ==================== 外网访问检测 ====================
 var defaultTransport = &http.Transport{
-	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-}
-// ==================== 外网访问检测 ====================
-var defaultTransport = &http.Transport{
     TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 }
 
