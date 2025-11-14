@@ -41,7 +41,8 @@
 ```bash
 curl -s https://raw.githubusercontent.com/yourusername/yourrepo/main/start_scanner.sh | bash 
 ```
-#fork仓库，一键脚本的用户名与仓库名改为你自己的
+#fork 本仓库，并将一键脚本中的用户名与仓库名替换为您自己的，然后粘贴到 VPS 上回车运行
+### 其他命令
 
 #查看运行状态，ps aux | grep scanner
 
