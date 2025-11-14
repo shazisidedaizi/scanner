@@ -273,65 +273,76 @@ func loadTasksFromURLs(ctx context.Context, urls []string, portInput string, tas
 }
 
 func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<- scanTask) (bool, int) {
-    log.Printf("[*] 正在从 URL 加载代理: %s", u)
-    client := &http.Client{Timeout: 15 * time.Second}
+	log.Printf("[*] 正在从 URL 加载代理: %s", u)
+	client := &http.Client{Timeout: 15 * time.Second}
 
-    resp, err := client.Get(u)
-    if err != nil {
-        log.Printf("[!] URL 获取失败: %v", err)
-        return false, 0
-    }
-    defer resp.Body.Close()
+	resp, err := client.Get(u)
+	if err != nil {
+		log.Printf("[!] URL 获取失败: %v", err)
+		return false, 0
+	}
+	defer resp.Body.Close()
 
-    if resp.StatusCode != http.StatusOK {
-        log.Printf("[!] URL 状态码: %d", resp.StatusCode)
-        return false, 0
-    }
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[!] URL 状态码: %d", resp.StatusCode)
+		return false, 0
+	}
 
-    defaultPorts, _ := parsePorts(portInput)
-    scanner := bufio.NewScanner(resp.Body)
+	defaultPorts, _ := parsePorts(portInput)
+	scanner := bufio.NewScanner(resp.Body)
 
-    loaded := false
-    taskCount := 0
+	loaded := false
+	taskCount := 0
 
-    for scanner.Scan() {
-        select {
-        case <-ctx.Done():
-            return loaded, taskCount
-        default:
-        }
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return loaded, taskCount
+		default:
+		}
 
-        line := strings.TrimSpace(scanner.Text())
-        if line == "" || !strings.Contains(line, ":") {
-            continue
-        }
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
 
-        parts := strings.SplitN(line, ":", 2)
-        ipStr := strings.TrimSpace(parts[0])
-        portStr := strings.TrimSpace(parts[1])
+		// 去掉协议前缀
+		line = strings.TrimPrefix(line, "socks5://")
+		line = strings.TrimPrefix(line, "http://")
+		line = strings.TrimPrefix(line, "https://")
 
-        if net.ParseIP(ipStr) == nil {
-            continue
-        }
+		// 提取 IP 和端口
+		var ipStr, portStr string
+		if strings.Contains(line, ":") {
+			parts := strings.SplitN(line, ":", 2)
+			ipStr = strings.TrimSpace(parts[0])
+			portStr = strings.TrimSpace(parts[1])
+		} else {
+			// 没有端口则跳过
+			continue
+		}
 
-        var ports []int
-        if port, err := strconv.Atoi(portStr); err == nil {
-            ports = []int{port}
-        } else {
-            ports = defaultPorts
-        }
+		if net.ParseIP(ipStr) == nil {
+			continue
+		}
 
-        for _, p := range ports {
-            taskChan <- scanTask{IP: ipStr, Port: p}
-            taskCount++
-        }
+		var ports []int
+		if port, err := strconv.Atoi(portStr); err == nil {
+			ports = []int{port}
+		} else {
+			ports = defaultPorts
+		}
 
-        loaded = true
-    }
+		for _, p := range ports {
+			taskChan <- scanTask{IP: ipStr, Port: p}
+			taskCount++
+		}
 
-    return loaded, taskCount
+		loaded = true
+	}
+
+	return loaded, taskCount
 }
-
 
 // ==================== 扫描代理 ====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
@@ -339,21 +350,25 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 	addr := fmt.Sprintf("%s:%d", ip, port)
 
 	// 空密码先尝试
-	{
+	select {
+	case <-ctx.Done():
+		return result
+	default:
 		auth := &proxy.Auth{User: "", Password: ""}
 		dialer, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
 		if err == nil {
-			ok, _, _ := testSocks5WithDialer(dialer, timeout)
+			ok, _, _ := testSocks5WithDialer(ctx, dialer, timeout)
 			if ok {
-				// 空密码成功 → 丢弃
 				return result
 			}
 		}
 	}
 
 	for _, pair := range weakPasswordsSlice {
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			return result
+		default:
 		}
 
 		auth := &proxy.Auth{User: pair[0], Password: pair[1]}
@@ -362,12 +377,12 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			continue
 		}
 
-		ok, lat, exportIP := testSocks5WithDialer(dialer, timeout)
+		ok, lat, exportIP := testSocks5WithDialer(ctx, dialer, timeout)
 		if !ok || !isPublicIP(exportIP) {
 			continue
 		}
 
-		if !testInternetAccess(dialer, timeout) {
+		if !testInternetAccess(ctx, dialer, timeout) {
 			continue
 		}
 
@@ -386,28 +401,46 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 	return result
 }
 
-// ==================== SOCKS5 测试 ====================
-func testSocks5WithDialer(dialer proxy.Dialer, timeout time.Duration) (bool, int, string) {
-	if err := limiter.Wait(context.Background()); err != nil {
+// ==================== SOCKS5 测试（支持 ctx） ====================
+func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time.Duration) (bool, int, string) {
+	if err := limiter.Wait(ctx); err != nil {
 		return false, 0, ""
 	}
 
 	start := time.Now()
-	conn, err := dialer.Dial("tcp", "ifconfig.me:80")
-	if err != nil {
+	dialCh := make(chan net.Conn, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		conn, err := dialer.Dial("tcp", "ifconfig.me:80")
+		if err != nil {
+			errCh <- err
+			return
+		}
+		dialCh <- conn
+	}()
+
+	var conn net.Conn
+	select {
+	case <-ctx.Done():
 		return false, 0, ""
+	case err := <-errCh:
+		return false, 0, ""
+	case c := <-dialCh:
+		conn = c
 	}
 	defer conn.Close()
 
 	conn.SetDeadline(time.Now().Add(timeout))
 	fmt.Fprintf(conn, "GET /ip HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n")
-
-	buf := make([]byte, 128)
-	n, err := conn.Read(buf)
+	
+	buf, err := io.ReadAll(conn)
 	if err != nil {
-		return false, 0, ""
+    	return false, 0, ""
 	}
-	exportIP := strings.TrimSpace(string(buf[:n]))
+	lines := strings.Split(string(buf), "\n")
+	exportIP := strings.TrimSpace(lines[len(lines)-1]) // 最后一行通常是 IP
+	
 	if exportIP == "" || !isPublicIP(exportIP) {
 		return false, 0, ""
 	}
@@ -500,14 +533,16 @@ func queryCountry(ip string) string {
 	return data.CountryCode
 }
 
-// ==================== 写入结果 ====================
+// ==================== 写入结果（实时 flush） ====================
 func writeResult(r Result) {
 	detailMu.Lock()
 	fmt.Fprintf(detailFile, "%s:%d [%s] %s %dms %s\n", r.IP, r.Port, r.Scheme, r.Auth, r.Latency, r.Country)
+	detailFile.Sync()
 	detailMu.Unlock()
 
 	validMu.Lock()
 	fmt.Fprintf(validFile, "%s:%d\n", r.IP, r.Port)
+	validFile.Sync()
 	validMu.Unlock()
 	atomic.AddInt64(&validCount, 1)
 }
@@ -564,11 +599,15 @@ func cidrGenerator(cidr string) (<-chan string, error) {
 	}
 	ch := make(chan string)
 	go func() {
-		defer close(ch)
-		for ip := copyIP(ipnet.IP.Mask(ipnet.Mask)); ipnet.Contains(ip); incIP(ip) {
-			ch <- ip.String()
-		}
-	}()
+    defer close(ch)
+    for ip := copyIP(ipnet.IP.Mask(ipnet.Mask)); ipnet.Contains(ip); incIP(ip) {
+        select {
+        case ch <- ip.String():
+        case <-ctx.Done():
+            return
+        }
+    }
+}()
 	return ch, nil
 }
 
@@ -632,8 +671,14 @@ func parsePorts(input string) ([]int, error) {
 			if len(r) != 2 {
 				continue
 			}
-			s, _ := strconv.Atoi(strings.TrimSpace(r[0]))
-			e, _ := strconv.Atoi(strings.TrimSpace(r[1]))
+			s, err := strconv.Atoi(strings.TrimSpace(r[0]))
+			if err != nil || s < 1 || s > 65535 {
+    			continue // 跳过非法起始端口
+			}
+			e, err := strconv.Atoi(strings.TrimSpace(r[1]))
+			if err != nil || e < 1 || e > 65535 {
+    			continue // 跳过非法结束端口
+			}
 			if s < 1 || e > 65535 {
 				continue
 			}
@@ -644,9 +689,12 @@ func parsePorts(input string) ([]int, error) {
 				ports = append(ports, i)
 			}
 		} else {
-			port, _ := strconv.Atoi(strings.TrimSpace(p))
-			if port >= 1 && port <= 65535 {
-				ports = append(ports, port)
+			port, err := strconv.Atoi(strings.TrimSpace(p))
+			if err != nil || port < 1 || port > 65535 {
+    			log.Printf("非法端口: %s", p)
+    			continue
+			}
+			ports = append(ports, port)
 			}
 		}
 	}
