@@ -20,6 +20,10 @@
 
 curl -s https://raw.githubusercontent.com/yourusername/yourrepo/main/start_scanner.sh | bash
 
+#先fork仓库，然后一键脚本的用户名与仓库改为你自己的
+
+## 手动安装步骤
+
 ### 步骤 1：更新系统 & 安装依赖
 
 sudo apt update && sudo apt upgrade -y
