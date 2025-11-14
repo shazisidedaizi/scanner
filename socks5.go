@@ -42,7 +42,7 @@ var (
 
 // ==================== 内置 URL 列表 ====================
 var builtInURLs = []string{
-    // Proxifly (GitHub CDN, updates every 5 minutes, 2300+ proxies)
+    // Proxifly (GitHub CDN, updates every 5 minutes)
     "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt",
 
     // ProxyScrape (updates every minute, TXT format)
