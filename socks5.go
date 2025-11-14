@@ -595,9 +595,10 @@ func writeResult(r Result) {
 	fmt.Fprintf(detailWriter, "%s:%d [%s] %s %dms %s\n", r.IP, r.Port, r.Scheme, r.Auth, r.Latency, r.Country)
 	detailMu.Unlock()
 
+	// 写入有效节点文件，格式：socks5://user:pass@ip:port#国家代码
 	validMu.Lock()
-	// 将有效节点写为 socks5://user:pass@ip:port
-	fmt.Fprintf(validWriter, "socks5://%s@%s:%d\n", r.Auth, r.IP, r.Port)
+	fmt.Fprintf(validWriter, "%s://%s@%s:%d#%s\n",
+		r.Scheme, r.Auth, r.IP, r.Port, r.Country)
 	validMu.Unlock()
 
 	atomic.AddInt64(&validCount, 1)
