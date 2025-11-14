@@ -38,6 +38,25 @@ var (
 	validMu          sync.Mutex
 )
 
+// ==================== 内置 URL 列表 ====================
+var builtInURLs = []string{
+	# Proxifly (GitHub CDN, 更新每 5 分钟，2300+ 代理)
+    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt",
+    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt",
+    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks4/data.txt",
+    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt",
+
+    # ProxyScrape (更新每分钟，TXT 格式)
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all",
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=10000&country=all",
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all",
+
+    # free-proxy-list.net (更新每 30 分钟，API TXT)
+    "https://www.free-proxy-list.net/",
+    "https://api.proxylist.download/http?limit=500",  # HTTP 代理
+    "https://api.proxylist.download/socks5?limit=500",  # SOCKS5 代理
+}
+
 // ==================== 结果结构 ====================
 type Result struct {
 	IP       string
@@ -62,8 +81,19 @@ func main() {
 	portInput := flag.String("port", "", "Ports: 1080 / 80 8080 / 1-65535")
 	threads := flag.Int("threads", 0, "Max concurrent connections")
 	timeout := flag.Duration("timeout", 0, "Timeout per request (e.g. 5s)")
-	urlInput := flag.String("url", "", "URL to fetch IP:port list from")
+	urlInputs := flag.String("url", "", "URLs to fetch (comma-separated)")
 	flag.Parse()
+
+	// 解析启动参数 URL 列表
+	var finalURLs []string
+	if *urlInputs != "" {
+		for _, u := range strings.Split(*urlInputs, ",") {
+			u = strings.TrimSpace(u)
+			if u != "" {
+				finalURLs = append(finalURLs, u)
+			}
+		}
+	}
 
 	loadCountryCache()
 	defer saveCountryCache()
@@ -86,7 +116,6 @@ func main() {
 
 	finalIPRange := *ipRange
 	finalPortInput := *portInput
-	finalURL := *urlInput
 	finalThreads := *threads
 	finalTimeout := *timeout
 
@@ -126,15 +155,24 @@ func main() {
 	// ==================== 生成任务 ====================
 	go func() {
 		defer close(taskChan)
-		if finalURL != "" {
-			streamAddrsFromURL(ctx, finalURL, finalPortInput, taskChan)
+		// ① 内置 URL
+		if loadTasksFromURLs(ctx, builtInURLs, finalPortInput, taskChan) {
+			log.Println("[+] 已成功从内置 URL 加载任务")
 			return
 		}
-
+		// ② 启动参数 URL
+		if len(finalURLs) > 0 {
+			if loadTasksFromURLs(ctx, finalURLs, finalPortInput, taskChan) {
+				log.Println("[+] 已从启动参数 URL 加载任务")
+				return
+			}
+		}
+		// ③ 交互式输入
 		if finalIPRange == "" {
 			finalIPRange = promptIPRange(defaultStart, defaultEnd)
 		}
 		ipChan, _ := ipGenerator(finalIPRange)
+
 		if finalPortInput == "" {
 			finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
 		}
@@ -186,28 +224,45 @@ func main() {
 	log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", atomic.LoadInt64(&validCount))
 }
 
-// ==================== 流式 URL 加载 ====================
-func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<- scanTask) {
-	log.Printf("[*] 正在从 URL 流式加载代理: %s", u)
+// ==================== 任务加载函数 ====================
+func loadTasksFromURLs(ctx context.Context, urls []string, portInput string, taskChan chan<- scanTask) bool {
+	for _, u := range urls {
+		if ctx.Err() != nil {
+			return false
+		}
+		ok := streamAddrsFromURL(ctx, u, portInput, taskChan)
+		if ok {
+			log.Printf("[+] 成功从 URL 加载任务: %s", u)
+			return true
+		}
+	}
+	return false
+}
+
+func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<- scanTask) bool {
+	log.Printf("[*] 正在从 URL 加载代理: %s", u)
 	client := &http.Client{Timeout: 15 * time.Second}
+
 	resp, err := client.Get(u)
 	if err != nil {
 		log.Printf("[!] URL 获取失败: %v", err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[!] URL 返回状态: %d", resp.StatusCode)
-		return
+		log.Printf("[!] URL 状态码: %d", resp.StatusCode)
+		return false
 	}
 
 	defaultPorts, _ := parsePorts(portInput)
 	scanner := bufio.NewScanner(resp.Body)
+	loaded := false
 
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		default:
 		}
 		line := strings.TrimSpace(scanner.Text())
@@ -217,28 +272,23 @@ func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<
 		parts := strings.SplitN(line, ":", 2)
 		ipStr := strings.TrimSpace(parts[0])
 		portStr := strings.TrimSpace(parts[1])
-
 		if net.ParseIP(ipStr) == nil {
 			continue
 		}
 
 		var ports []int
-		if port, err := strconv.Atoi(portStr); err == nil && port > 0 && port <= 65535 {
+		if port, err := strconv.Atoi(portStr); err == nil {
 			ports = []int{port}
-		} else if len(defaultPorts) > 0 {
-			ports = defaultPorts
 		} else {
-			continue
+			ports = defaultPorts
 		}
-
 		for _, p := range ports {
-			select {
-			case taskChan <- scanTask{IP: ipStr, Port: p})
-			case <-ctx.Done():
-				return
-			}
+			taskChan <- scanTask{IP: ipStr, Port: p}
 		}
+		loaded = true
 	}
+
+	return loaded
 }
 
 // ==================== 扫描代理 ====================
@@ -246,13 +296,14 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 	result := Result{IP: ip, Port: port}
 	addr := fmt.Sprintf("%s:%d", ip, port)
 
+	// 空密码先尝试
 	{
 		auth := &proxy.Auth{User: "", Password: ""}
 		dialer, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
 		if err == nil {
-			ok, _, _ := testSocks5WithDialer(ctx, dialer, timeout)
+			ok, _, _ := testSocks5WithDialer(dialer, timeout)
 			if ok {
-				// 空密码鉴权成功 → 说明节点配置错误，直接丢弃，不进入弱扫
+				// 空密码成功 → 丢弃
 				return result
 			}
 		}
@@ -269,27 +320,22 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			continue
 		}
 
-		// SOCKS5 握手
-		ok, lat, exportIP := testSocks5WithDialer(ctx, dialer, timeout)
+		ok, lat, exportIP := testSocks5WithDialer(dialer, timeout)
 		if !ok || !isPublicIP(exportIP) {
 			continue
 		}
 
-		// 外网访问测试（优化后的）
-		if !testInternetAccess(ctx, dialer, timeout) {
+		if !testInternetAccess(dialer, timeout) {
 			continue
 		}
 
-		// 命中弱密码 → 填充结果
 		result.Scheme = "socks5"
 		result.Latency = lat
 		result.ExportIP = exportIP
-
 		result.Country = getCountry(exportIP)
 		if result.Country == "XX" {
 			result.Country = getCountry(ip)
 		}
-
 		result.Auth = fmt.Sprintf("%s:%s", pair[0], pair[1])
 		result.IsWeak = true
 		return result
@@ -300,10 +346,9 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 
 // ==================== SOCKS5 测试 ====================
 func testSocks5WithDialer(dialer proxy.Dialer, timeout time.Duration) (bool, int, string) {
-	// 使用独立限流 context 避免与外部 ctx 冲突
 	if err := limiter.Wait(context.Background()); err != nil {
-        return false, 0, ""
-    }
+		return false, 0, ""
+	}
 
 	start := time.Now()
 	conn, err := dialer.Dial("tcp", "ifconfig.me:80")
@@ -326,6 +371,7 @@ func testSocks5WithDialer(dialer proxy.Dialer, timeout time.Duration) (bool, int
 	}
 	return true, int(time.Since(start).Milliseconds()), exportIP
 }
+
 // ==================== 外网访问检测 ====================
 var defaultTransport = &http.Transport{
 	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -333,11 +379,8 @@ var defaultTransport = &http.Transport{
 
 func testInternetAccess(dialer proxy.Dialer, timeout time.Duration) bool {
 	transport := defaultTransport.Clone()
-	transport.DialContext = func(parentCtx context.Context, network, addr string) (net.Conn, error) {
-    	dialCtx, cancel := context.WithTimeout(context.Background(), timeout)
-    	defer cancel()
-    	return dialer.DialContext(dialCtx, network, addr)  // 正确！
-	}
+	transport.Dial = dialer.Dial
+
 	client := &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
