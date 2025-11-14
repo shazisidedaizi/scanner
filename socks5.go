@@ -450,7 +450,7 @@ func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time
 	select {
 	case <-ctx.Done():
 		return false, 0, ""
-	case err := <-errCh:
+	case err = <-errCh:
 		return false, 0, ""
 	case c := <-dialCh:
 		conn = c
@@ -632,7 +632,7 @@ func ipGenerator(ctx context.Context, r string) (<-chan string, error) {
     if strings.Contains(r, "/") {
         return cidrGenerator(ctx, r)
     }
-    return rangeDashGenerator(r)
+    return rangeDashGenerator(ctx, r)
 }
 
 func cidrGenerator(ctx context.Context, cidr string) (<-chan string, error) {
@@ -654,7 +654,7 @@ func cidrGenerator(ctx context.Context, cidr string) (<-chan string, error) {
 	return ch, nil
 }
 
-func rangeDashGenerator(r string) (<-chan string, error) {
+func rangeDashGenerator(ctx context.Context, r string) (<-chan string, error) {
 	parts := strings.Split(r, "-")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid IP range format")
@@ -710,39 +710,39 @@ func compareIP(a, b net.IP) int {
 }
 
 func parsePorts(input string) ([]int, error) {
-	var ports []int
-	input = strings.ReplaceAll(input, ",", " ")
-	for _, p := range strings.Fields(input) {
-		if strings.Contains(p, "-") {
-			r := strings.Split(p, "-")
-			if len(r) != 2 {
-				continue
-			}
-			s, err := strconv.Atoi(strings.TrimSpace(r[0]))
-			if err != nil || s < 1 || s > 65535 {
-    			continue // 跳过非法起始端口
-			}
-			e, err := strconv.Atoi(strings.TrimSpace(r[1]))
-			if err != nil || e < 1 || e > 65535 {
-    			continue // 跳过非法结束端口
-			}
-			if s > e {
-				s, e = e, s
-			}
-			for i := s; i <= e; i++ {
-				ports = append(ports, i)
-			}
-		} else {
-			port, err := strconv.Atoi(strings.TrimSpace(p))
-			if err != nil || port < 1 || port > 65535 {
-    			log.Printf("非法端口: %s", p)
-    			continue
-			}
-			ports = append(ports, port)
-			}
-		}
-	}
-	return ports, nil
+    var ports []int
+    input = strings.ReplaceAll(input, ",", " ")
+
+    for _, p := range strings.Fields(input) {
+        if strings.Contains(p, "-") {
+            r := strings.Split(p, "-")
+            if len(r) != 2 {
+                continue
+            }
+            s, err := strconv.Atoi(strings.TrimSpace(r[0]))
+            if err != nil || s < 1 || s > 65535 {
+                continue
+            }
+            e, err := strconv.Atoi(strings.TrimSpace(r[1]))
+            if err != nil || e < 1 || e > 65535 {
+                continue
+            }
+            if s > e {
+                s, e = e, s
+            }
+            for i := s; i <= e; i++ {
+                ports = append(ports, i)
+            }
+        } else {
+            port, err := strconv.Atoi(strings.TrimSpace(p))
+            if err != nil || port < 1 || port > 65535 {
+                log.Printf("非法端口: %s", p)
+                continue
+            }
+            ports = append(ports, port)
+        }
+    }
+    return ports, nil
 }
 
 // ==================== 弱密码加载 ====================
