@@ -150,7 +150,7 @@ cat result_detail.txt
 感谢您对本项目（Proxy Scanner Go Edition）的关注和使用！
 
 - **特别鸣谢**：  
-  本代码修改自OTC大佬的项目https://github.com/avotcorg/scamnet，感谢OTC大佬@avotcorg的贡献。
+ 本代码修改自 OTC 大佬的项目 [https://github.com/avotcorg/scamnet](https://github.com/avotcorg/scamnet)，感谢 OTC 大佬 [@avotcorg](https://github.com/avotcorg) 的贡献。。
   
 **再次感谢！如果这个项目对您有帮助，请考虑给我们一个 Star ⭐ 或分享给朋友。您的认可是我们最大的鼓励。**
 
