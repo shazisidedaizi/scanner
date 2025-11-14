@@ -50,7 +50,7 @@ var builtInURLs = []string{
     // ProxyScrape (updates every minute, TXT format)
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=10000&country=all",
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all"
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all"，
 }
 
 // ==================== 结果结构 ====================
@@ -610,7 +610,7 @@ func loadWeakPasswords(file string) [][2]string {
 			{"letmein", "letmein"}, {"sunshine", "sunshine"}, {"baseball", "baseball"},
 			{"princess", "princess"}, {"admin123", "admin123"}, {"superman", "superman"},
 			{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
-			{"test", "test"}, {"demo", "demo"}
+			{"test", "test"}, {"demo", "demo"},
 		}
 	}
 	var list [][2]string
