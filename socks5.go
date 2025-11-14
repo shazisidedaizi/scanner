@@ -375,7 +375,7 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 	result := Result{IP: ip, Port: port}
 	addr := fmt.Sprintf("%s:%d", ip, port)
 
-	// 空密码先尝试
+	// ================== 尝试空密码 ==================
 	select {
 	case <-ctx.Done():
 		return result
@@ -385,11 +385,14 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 		if err == nil {
 			ok, _, _ := testSocks5WithDialer(ctx, dialer, timeout)
 			if ok {
-				return result
+				// 空密码成功，直接丢弃，不记录
+				log.Printf("[INFO] 空密码可用节点，丢弃: %s:%d", ip, port)
+				return Result{}
 			}
 		}
 	}
 
+	// ================== 尝试弱密码 ==================
 	for _, pair := range weakPasswordsSlice {
 		select {
 		case <-ctx.Done():
@@ -408,10 +411,13 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			continue
 		}
 
+		// 使用这个成功联通的弱密码去测试外网访问
 		if !testInternetAccess(ctx, dialer, timeout) {
-			continue
+			log.Printf("[INFO] 弱密码成功，但外网访问失败，丢弃: %s:%d (%s:%s)", ip, port, pair[0], pair[1])
+			return Result{}
 		}
 
+		// 外网访问成功，记录结果
 		result.Scheme = "socks5"
 		result.Latency = lat
 		result.ExportIP = exportIP
@@ -424,7 +430,8 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 		return result
 	}
 
-	return result
+	// 所有弱密码尝试失败，返回空结果
+	return Result{}
 }
 
 // ==================== SOCKS5 测试（支持 ctx） ====================
@@ -540,7 +547,6 @@ func testInternetAccess(ctx context.Context, dialer proxy.Dialer, timeout time.D
     log.Printf("[DEBUG] 所有外网访问测试失败")
     return false
 }
-
 
 // ==================== 公网 IP 判断 ====================
 func isPublicIP(ipStr string) bool {
