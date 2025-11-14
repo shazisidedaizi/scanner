@@ -19,7 +19,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"sync/atomic"
 
 	"github.com/cheggaaa/pb/v3"
 	"golang.org/x/net/proxy"
@@ -50,7 +49,7 @@ var builtInURLs = []string{
     // ProxyScrape (updates every minute, TXT format)
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=10000&country=all",
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all"，
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all",
 }
 
 // ==================== 结果结构 ====================
@@ -191,12 +190,6 @@ func main() {
 	bar.Set("prefix", "Scanning ")
 	bar.Start()
 
-	// 动态增加总数
-	for _, ipPort := range scannedFromURL {
-    	bar.SetTotal(bar.Total() + 1)
-    	taskChan <- ipPort
-	}
-
 	// ==================== Worker 池 ====================
 	var wg sync.WaitGroup
 	for i := 0; i < finalThreads; i++ {
@@ -230,71 +223,89 @@ func main() {
 }
 
 // ==================== 任务加载函数 ====================
-func loadTasksFromURLs(ctx context.Context, urls []string, portInput string, taskChan chan<- scanTask) bool {
-	for _, u := range urls {
-		if ctx.Err() != nil {
-			return false
-		}
-		ok := streamAddrsFromURL(ctx, u, portInput, taskChan)
-		if ok {
-			log.Printf("[+] 成功从 URL 加载任务: %s", u)
-			return true
-		}
-	}
-	return false
+func loadTasksFromURLs(ctx context.Context, urls []string, portInput string, taskChan chan<- scanTask) (bool, int) {
+    totalTasks := 0
+    loadedAny := false
+
+    for _, u := range urls {
+        if ctx.Err() != nil {
+            break
+        }
+
+        ok, count := streamAddrsFromURL(ctx, u, portInput, taskChan)
+        totalTasks += count
+
+        if ok {
+            log.Printf("[+] URL 加载成功: %s (%d 个任务)", u, count)
+            loadedAny = true
+        } else {
+            log.Printf("[-] URL 无有效数据: %s", u)
+        }
+    }
+
+    return loadedAny, totalTasks
 }
 
-func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<- scanTask) bool {
-	log.Printf("[*] 正在从 URL 加载代理: %s", u)
-	client := &http.Client{Timeout: 15 * time.Second}
+func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<- scanTask) (bool, int) {
+    log.Printf("[*] 正在从 URL 加载代理: %s", u)
+    client := &http.Client{Timeout: 15 * time.Second}
 
-	resp, err := client.Get(u)
-	if err != nil {
-		log.Printf("[!] URL 获取失败: %v", err)
-		return false
-	}
-	defer resp.Body.Close()
+    resp, err := client.Get(u)
+    if err != nil {
+        log.Printf("[!] URL 获取失败: %v", err)
+        return false, 0
+    }
+    defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[!] URL 状态码: %d", resp.StatusCode)
-		return false
-	}
+    if resp.StatusCode != http.StatusOK {
+        log.Printf("[!] URL 状态码: %d", resp.StatusCode)
+        return false, 0
+    }
 
-	defaultPorts, _ := parsePorts(portInput)
-	scanner := bufio.NewScanner(resp.Body)
-	loaded := false
+    defaultPorts, _ := parsePorts(portInput)
+    scanner := bufio.NewScanner(resp.Body)
 
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return false
-		default:
-		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || !strings.Contains(line, ":") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		ipStr := strings.TrimSpace(parts[0])
-		portStr := strings.TrimSpace(parts[1])
-		if net.ParseIP(ipStr) == nil {
-			continue
-		}
+    loaded := false
+    taskCount := 0
 
-		var ports []int
-		if port, err := strconv.Atoi(portStr); err == nil {
-			ports = []int{port}
-		} else {
-			ports = defaultPorts
-		}
-		for _, p := range ports {
-			taskChan <- scanTask{IP: ipStr, Port: p}
-		}
-		loaded = true
-	}
+    for scanner.Scan() {
+        select {
+        case <-ctx.Done():
+            return loaded, taskCount
+        default:
+        }
 
-	return loaded
+        line := strings.TrimSpace(scanner.Text())
+        if line == "" || !strings.Contains(line, ":") {
+            continue
+        }
+
+        parts := strings.SplitN(line, ":", 2)
+        ipStr := strings.TrimSpace(parts[0])
+        portStr := strings.TrimSpace(parts[1])
+
+        if net.ParseIP(ipStr) == nil {
+            continue
+        }
+
+        var ports []int
+        if port, err := strconv.Atoi(portStr); err == nil {
+            ports = []int{port}
+        } else {
+            ports = defaultPorts
+        }
+
+        for _, p := range ports {
+            taskChan <- scanTask{IP: ipStr, Port: p}
+            taskCount++
+        }
+
+        loaded = true
+    }
+
+    return loaded, taskCount
 }
+
 
 // ==================== 扫描代理 ====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
@@ -381,28 +392,51 @@ func testSocks5WithDialer(dialer proxy.Dialer, timeout time.Duration) (bool, int
 var defaultTransport = &http.Transport{
 	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 }
-
 func testInternetAccess(dialer proxy.Dialer, timeout time.Duration) bool {
     transport := defaultTransport.Clone()
     transport.Dial = dialer.Dial
+    transport.ForceAttemptHTTP2 = false // 防止 Socks5 HTTP2 卡死
     client := &http.Client{Timeout: timeout, Transport: transport}
+
     testURLs := []string{
         "https://www.google.com/generate_204",
         "http://httpbin.org/status/204",
         "https://cloudflare.com/cdn-cgi/trace",
     }
-    for _, url := range testURLs {
-        resp, err := client.Get(url)
-        if err == nil && resp.StatusCode == 204 {
-            resp.Body.Close()
+
+    for i, u := range testURLs {
+        resp, err := client.Get(u)
+        if err != nil {
+            log.Printf("[DEBUG] 访问失败（URL %d: %s）: %v", i+1, u, err)
+            continue
+        }
+
+        // 必须立刻关闭 Body，而不是 defer！避免 FD 泄露
+        body, readErr := io.ReadAll(resp.Body)
+        resp.Body.Close()
+
+        if readErr != nil {
+            log.Printf("[DEBUG] 读取响应体失败（URL %d: %s）: %v", i+1, u, readErr)
+            continue
+        }
+
+        // 接受 200 / 204
+        if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+            if resp.StatusCode == http.StatusOK && len(body) == 0 {
+                log.Printf("[DEBUG] 响应体为空（URL %d: %s）", i+1, u)
+                continue
+            }
+            log.Printf("[DEBUG] 外网访问成功（URL %d: %s，状态码: %d）", i+1, u, resp.StatusCode)
             return true
         }
-        if resp != nil {
-            resp.Body.Close()
-        }
+
+        log.Printf("[DEBUG] 无效状态码（URL %d: %s，状态码: %d）", i+1, u, resp.StatusCode)
     }
+
+    log.Printf("[DEBUG] 所有外网访问测试失败")
     return false
 }
+
 
 // ==================== 公网 IP 判断 ====================
 func isPublicIP(ipStr string) bool {
