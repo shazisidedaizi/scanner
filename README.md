@@ -41,7 +41,7 @@
 
 curl -s https://raw.githubusercontent.com/yourusername/yourrepo/main/start_scanner.sh | bash
 
-#先fork仓库，然后一键脚本的用户名与仓库改为你自己的
+#fork仓库，一键脚本的用户名与仓库名改为你自己的
 
 ## 手动安装步骤
 
@@ -145,5 +145,13 @@ cat proxy_valid.txt
 cat result_detail.txt
 
 
+# 感谢结语 (Acknowledgments)
+
+这是我的第一个开源项目，如果您发现任何不当之处或有改进建议，请随时与我联系。感谢您对本项目（Proxy Scanner Go Edition）的关注和使用！
+
+- **特别鸣谢**：  
+  本代码修改自OTC大佬的项目https://github.com/avotcorg/scamnet，感谢OTC大佬@avotcorg的贡献。
+  
+**再次感谢！如果这个项目对您有帮助，请考虑给我们一个 Star ⭐ 或分享给朋友。您的认可是我们最大的鼓励。**
 
 
