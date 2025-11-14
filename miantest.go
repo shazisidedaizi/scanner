@@ -301,8 +301,6 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 // ==================== SOCKS5 测试 ====================
 func testSocks5WithDialer(dialer proxy.Dialer, timeout time.Duration) (bool, int, string) {
 	// 使用独立限流 context 避免与外部 ctx 冲突
-	limiterCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	if err := limiter.Wait(limiterCtx); err != nil {
 		return false, 0, ""
 	}
@@ -336,6 +334,8 @@ var defaultTransport = &http.Transport{
 func testInternetAccess(dialer proxy.Dialer, timeout time.Duration) bool {
 	transport := defaultTransport.Clone()
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialCtx, cancel := context.WithTimeout(context.Background(), timeout)
+    	defer cancel()
 		return dialer.Dial(network, addr)
 	}
 	client := &http.Client{
@@ -544,19 +544,19 @@ func loadWeakPasswords(file string) [][2]string {
 	if err != nil {
 		log.Printf("Warning: failed to load weak passwords file: %v", err)
 		return [][2]string{		
-							{"123456", "123456"}, {"password", "password"}, {"admin", "admin"},
-							{"admin", "123456"}, {"root", "root"}, {"root", "123456"},
-							{"123456789", "123456789"}, {"qwerty", "qwerty"}, {"12345", "12345"},
-							{"12345678", "12345678"}, {"111111", "111111"}, {"user", "user"},
-							{"user", "password"}, {"123", "123"}, {"proxy", "proxy"}, {"socks5", "socks5"},
-							{"1234567", "1234567"}, {"iloveyou", "iloveyou"}, {"123123", "123123"},
-							{"000000", "000000"}, {"welcome", "welcome"}, {"secret", "secret"},
-							{"dragon", "dragon"}, {"monkey", "monkey"}, {"football", "football"},
-							{"letmein", "letmein"}, {"sunshine", "sunshine"}, {"baseball", "baseball"},
-							{"princess", "princess"}, {"admin123", "admin123"}, {"superman", "superman"},
-							{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
-							{"test", "test"}, {"demo", "demo"}
-						  }
+			{"123456", "123456"}, {"password", "password"}, {"admin", "admin"},
+			{"admin", "123456"}, {"root", "root"}, {"root", "123456"},
+			{"123456789", "123456789"}, {"qwerty", "qwerty"}, {"12345", "12345"},
+			{"12345678", "12345678"}, {"111111", "111111"}, {"user", "user"},
+			{"user", "password"}, {"123", "123"}, {"proxy", "proxy"}, {"socks5", "socks5"},
+			{"1234567", "1234567"}, {"iloveyou", "iloveyou"}, {"123123", "123123"},
+			{"000000", "000000"}, {"welcome", "welcome"}, {"secret", "secret"},
+			{"dragon", "dragon"}, {"monkey", "monkey"}, {"football", "football"},
+			{"letmein", "letmein"}, {"sunshine", "sunshine"}, {"baseball", "baseball"},
+			{"princess", "princess"}, {"admin123", "admin123"}, {"superman", "superman"},
+			{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
+			{"test", "test"}, {"demo", "demo"}
+		}
 	}
 	var list [][2]string
 	for _, line := range strings.Split(string(data), "\n") {
