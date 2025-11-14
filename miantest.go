@@ -43,7 +43,7 @@ var (
 		{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
 		{"test", "test"}, {"demo", "demo"},
 	}
-	protocols = []string{"socks5", "http", "socks4"}
+	protocols = []string{"socks5","https"}
 
 	countryCache      sync.Map
 	validCount  int64
@@ -522,51 +522,48 @@ func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Aut
 		return false, 0, ""
 	}
 	addr := fmt.Sprintf("%s:%d", ip, port)
-	testURL := "http://ifconfig.me"
+	testURL := "https://ifconfig.me"
 
 	switch scheme {
-	case "http":
-		client := &http.Client{Timeout: timeout}
-		if auth != nil {
-			proxyURL, _ := url.Parse(fmt.Sprintf("http://%s:%s@%s:%d", auth.User, auth.Password, ip, port))
-			client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-		} else {
-			proxyURL, _ := url.Parse(fmt.Sprintf("http://%s:%d", ip, port))
-			client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-		}
-		start := time.Now()
-		resp, err := client.Get(testURL)
-		if err != nil {
-			return false, 0, ""
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return true, int(time.Since(start).Milliseconds()), strings.TrimSpace(string(body))
+	case "https":
+    client := &http.Client{Timeout: timeout}
+    var proxyURL *url.URL
+    if auth != nil {
+        proxyURL, _ = url.Parse(fmt.Sprintf("https://%s:%s@%s:%d", auth.User, auth.Password, ip, port))
+    } else {
+        proxyURL, _ = url.Parse(fmt.Sprintf("https://%s:%d", ip, port))
+    }
+    client.Transport = &http.Transport{
+        Proxy: http.ProxyURL(proxyURL),
+        TLSClientConfig: &tls.Config{InsecureSkipVerify: true},  // 跳过证书验证，处理自签名证书
+    }
+    start := time.Now()
+    resp, err := client.Get(testURL)
+    if err != nil {
+        return false, 0, ""
+    }
+    defer resp.Body.Close()
+    body, _ := io.ReadAll(resp.Body)
+    return true, int(time.Since(start).Milliseconds()), strings.TrimSpace(string(body))
 	case "socks5":
-		var d proxy.Dialer = proxy.Direct
-		if auth != nil {
-			dialURL := fmt.Sprintf("%s:%s@%s:%d", auth.User, auth.Password, ip, port)
-			socks5URL, _ := url.Parse("socks5://" + dialURL)
-			d, _ = proxy.FromURL(socks5URL, proxy.Direct)
-		} else {
-			socks5URL, _ := url.Parse(fmt.Sprintf("socks5://%s:%d", ip, port))
-			d, _ = proxy.FromURL(socks5URL, proxy.Direct)
-		}
-		start := time.Now()
-		conn, err := d.Dial("tcp", "ifconfig.me:80")
-		if err != nil {
-			return false, 0, ""
-		}
-		conn.Close()
-		return true, int(time.Since(start).Milliseconds()), ip
-	case "socks4":
-		start := time.Now()
-		conn, err := net.DialTimeout("tcp", addr, timeout)
-		if err != nil {
-			return false, 0, ""
-		}
-		conn.Close()
-		return true, int(time.Since(start).Milliseconds()), ip
+    start := time.Now()
+    conn, err := d.Dial("tcp", "ifconfig.me:443")  // 或 :443 如果testURL是HTTPS
+    if err != nil {
+        return false, 0, ""
+    }
+    defer conn.Close()
+    req := "GET / HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n"
+    _, err = conn.Write([]byte(req))
+    if err != nil {
+        return false, 0, ""
+    }
+    body, _ := io.ReadAll(conn)
+    ipMatch := regexp.MustCompile(`\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`).Find(body)
+    exportIP := string(ipMatch)
+    if exportIP == "" {
+        return false, 0, ""
+    }
+    return true, int(time.Since(start).Milliseconds()), exportIP
 	default:
 		return false, 0, ""
 	}
