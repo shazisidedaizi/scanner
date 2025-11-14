@@ -91,9 +91,9 @@ EOF
 
 source ~/.bashrc
 
-#验证安装
+#验证安装(输出应为：go version go1.24.9 linux/amd64)
 
-go version&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;输出应为：go version go1.24.9 linux/amd64
+go version
 
 ###  步骤 3：克隆项目并编译
 #克隆仓库
@@ -117,11 +117,11 @@ upx --best --lzma scanner
 ls -lh scanner
 
 ###  步骤 4：运行扫描（交互式输入
-直接运行(不能断开终端链接
+直接运行(不能断开终端链接)
 
 ./scanner
 
-#命令行后台运行扫描（参数都可以自定义，推荐选项
+#命令行后台运行扫描（参数都可以自定义，推荐选项)
 
 nohup ./scanner -ip-range 157.254.32.0-157.254.52.255 -port 1080 -threads 1000 -timeout 5s > scan.log 2>&1 &
 
