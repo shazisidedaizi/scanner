@@ -152,76 +152,51 @@ func main() {
 	bar.SetWriter(io.MultiWriter(os.Stdout, logFile))
 	bar.Set("prefix", "Scanning ")
 	bar.Start()
-	
+
 	// ==================== 生成任务 ====================
 	go func() {
-    	defer close(taskChan)
-    	// ① 内置 URL
-   	 	if ok, count := loadTasksFromURLs(ctx, builtInURLs, finalPortInput, taskChan); ok {
-        	bar.AddTotal(int64(count)) // 更新进度条总数
-        	log.Println("[+] 已成功从内置 URL 加载任务")
-        	return
-    	}
-    	// ② 启动参数 URL
-    	if len(finalURLs) > 0 {
-        	if ok, count := loadTasksFromURLs(ctx, finalURLs, finalPortInput, taskChan); ok {
-            	bar.AddTotal(int64(count)) // 更新进度条总数
-            	log.Println("[+] 已从启动参数 URL 加载任务")
-            	return
-        	}
-    	}
-    	// ③ 交互式输入
-    	if finalIPRange == "" {
-        	finalIPRange = promptIPRange(defaultStart, defaultEnd)
-    	}	
-    	ipChan, err := ipGenerator(finalIPRange)
-    	if err != nil {
-        	log.Fatalf("无效的 IP 范围: %v", err)
-    	}
-    	if finalPortInput == "" {
-        	finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
-    	}
-    	ports, err := parsePorts(finalPortInput)
-    	if err != nil {
-        	log.Fatalf("无效的端口输入: %v", err)
-    	}
-    	ipCount := calculateIPCount(finalIPRange) // 计算 IP 范围的任务数
-    	bar.AddTotal(int64(ipCount * len(ports))) // 更新进度条总数
-    	for ip := range ipChan {
-        	for _, port := range ports {
-            	select {
-            	case taskChan <- scanTask{IP: ip, Port: port}:
-            	case <-ctx.Done():
-                	return
-            	}
-        	}
-    	}
+		defer close(taskChan)
+		// ① 内置 URL
+		if ok, count := loadTasksFromURLs(ctx, builtInURLs, finalPortInput, taskChan); ok {
+			bar.AddTotal(int64(count))
+			log.Println("[+] 已成功从内置 URL 加载任务")
+			return
+		}
+		// ② 启动参数 URL
+		if len(finalURLs) > 0 {
+			if ok, count := loadTasksFromURLs(ctx, finalURLs, finalPortInput, taskChan); ok {
+				bar.AddTotal(int64(count))
+				log.Println("[+] 已从启动参数 URL 加载任务")
+				return
+			}
+		}
+		// ③ 交互式输入
+		if finalIPRange == "" {
+			finalIPRange = promptIPRange(defaultStart, defaultEnd)
+		}
+		ipChan, err := ipGenerator(finalIPRange)
+		if err != nil {
+			log.Fatalf("无效的 IP 范围: %v", err)
+		}
+		if finalPortInput == "" {
+			finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+		}
+		ports, err := parsePorts(finalPortInput)
+		if err != nil {
+			log.Fatalf("无效的端口输入: %v", err)
+		}
+		ipCount := calculateIPCount(finalIPRange)
+		bar.AddTotal(int64(ipCount * len(ports)))
+		for ip := range ipChan {
+			for _, port := range ports {
+				select {
+				case taskChan <- scanTask{IP: ip, Port: port}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
 	}()
-
-	func calculateIPCount(r string) int {
-    if strings.Contains(r, "/") {
-        _, ipnet, err := net.ParseCIDR(r)
-        if err != nil {
-            return 0
-        }
-        ones, bits := ipnet.Mask.Size()
-        return 1 << (bits - ones)
-    }
-    parts := strings.Split(r, "-")
-    if len(parts) != 2 {
-        return 0
-    }
-    start := net.ParseIP(strings.TrimSpace(parts[0])).To4()
-    end := net.ParseIP(strings.TrimSpace(parts[1])).To4()
-    if start == nil || end == nil {
-        return 0
-    }
-    count := 0
-    for ip := copyIP(start); compareIP(ip, end) <= 0; incIP(ip) {
-        count++
-    }
-    return count
-}
 
 	// ==================== Worker 池 ====================
 	var wg sync.WaitGroup
@@ -230,29 +205,52 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for task := range taskChan {
-    			key := task.IP + ":" + strconv.Itoa(task.Port)
+				key := task.IP + ":" + strconv.Itoa(task.Port)
 
-    			// ★★★ 第一时间检查是否已扫描 ★★★
-    			if _, loaded := seenProxies.LoadOrStore(key, true); loaded {
-        			bar.Increment()
-        			continue // 直接跳过，不进行任何扫描
-    			}
+				if _, loaded := seenProxies.LoadOrStore(key, true); loaded {
+					bar.Increment()
+					continue
+				}
 
-   		 		result := scanProxy(ctx, task.IP, task.Port, finalTimeout)
+				result := scanProxy(ctx, task.IP, task.Port, finalTimeout)
+				if result.Scheme != "" {
+					writeResult(result)
+				}
 
-    			if result.Scheme != "" {
-        			writeResult(result)
-    			}
-
-    			bar.Increment()
+				bar.Increment()
 			}
-
 		}()
 	}
 
 	wg.Wait()
 	bar.Finish()
 	log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", atomic.LoadInt64(&validCount))
+}
+
+// ==================== calculateIPCount ====================
+func calculateIPCount(r string) int {
+	if strings.Contains(r, "/") {
+		_, ipnet, err := net.ParseCIDR(r)
+		if err != nil {
+			return 0
+		}
+		ones, bits := ipnet.Mask.Size()
+		return 1 << (bits - ones)
+	}
+	parts := strings.Split(r, "-")
+	if len(parts) != 2 {
+		return 0
+	}
+	start := net.ParseIP(strings.TrimSpace(parts[0])).To4()
+	end := net.ParseIP(strings.TrimSpace(parts[1])).To4()
+	if start == nil || end == nil {
+		return 0
+	}
+	count := 0
+	for ip := copyIP(start); compareIP(ip, end) <= 0; incIP(ip) {
+		count++
+	}
+	return count
 }
 
 // ==================== 任务加载函数 ====================
