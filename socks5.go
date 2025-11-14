@@ -41,14 +41,9 @@ var (
 // ==================== 内置 URL 列表 ====================
 var builtInURLs = []string{
     // Proxifly (GitHub CDN, updates every 5 minutes, 2300+ proxies)
-    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt",
-    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt",
-    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks4/data.txt",
     "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt",
 
     // ProxyScrape (updates every minute, TXT format)
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all",
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=10000&country=all",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all",
 }
 
