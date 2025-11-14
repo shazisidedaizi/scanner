@@ -43,6 +43,16 @@ curl -s https://raw.githubusercontent.com/yourusername/yourrepo/main/start_scann
 ```
 #fork仓库，一键脚本的用户名与仓库名改为你自己的
 
+#查看运行状态，ps aux | grep scanner
+
+#查看实时日志，tail -f scan.log
+
+#安全停止，pkill scanner
+
+#有效代理（可直接使用），cat proxy_valid.txt
+
+#详细日志，cat result_detail.txt
+
 ### 手动安装步骤
 
 ### 步骤 1：更新系统 & 安装依赖
