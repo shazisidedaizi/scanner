@@ -147,48 +147,81 @@ func main() {
 		cancel()
 	}()
 
-	// ==================== 生成任务 ====================
-	go func() {
-		defer close(taskChan)
-		// ① 内置 URL
-		if loadTasksFromURLs(ctx, builtInURLs, finalPortInput, taskChan) {
-			log.Println("[+] 已成功从内置 URL 加载任务")
-			return
-		}
-		// ② 启动参数 URL
-		if len(finalURLs) > 0 {
-			if loadTasksFromURLs(ctx, finalURLs, finalPortInput, taskChan) {
-				log.Println("[+] 已从启动参数 URL 加载任务")
-				return
-			}
-		}
-		// ③ 交互式输入
-		if finalIPRange == "" {
-			finalIPRange = promptIPRange(defaultStart, defaultEnd)
-		}
-		ipChan, _ := ipGenerator(finalIPRange)
-
-		if finalPortInput == "" {
-			finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
-		}
-		ports, _ := parsePorts(finalPortInput)
-
-		for ip := range ipChan {
-			for _, port := range ports {
-				select {
-				case taskChan <- scanTask{IP: ip, Port: port}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-
 	// ==================== 进度条 ====================
 	bar := pb.New(0)
 	bar.SetWriter(io.MultiWriter(os.Stdout, logFile))
 	bar.Set("prefix", "Scanning ")
 	bar.Start()
+	
+	// ==================== 生成任务 ====================
+	go func() {
+    	defer close(taskChan)
+    	// ① 内置 URL
+   	 	if ok, count := loadTasksFromURLs(ctx, builtInURLs, finalPortInput, taskChan); ok {
+        	bar.AddTotal(int64(count)) // 更新进度条总数
+        	log.Println("[+] 已成功从内置 URL 加载任务")
+        	return
+    	}
+    	// ② 启动参数 URL
+    	if len(finalURLs) > 0 {
+        	if ok, count := loadTasksFromURLs(ctx, finalURLs, finalPortInput, taskChan); ok {
+            	bar.AddTotal(int64(count)) // 更新进度条总数
+            	log.Println("[+] 已从启动参数 URL 加载任务")
+            	return
+        	}
+    	}
+    	// ③ 交互式输入
+    	if finalIPRange == "" {
+        	finalIPRange = promptIPRange(defaultStart, defaultEnd)
+    	}	
+    	ipChan, err := ipGenerator(finalIPRange)
+    	if err != nil {
+        	log.Fatalf("无效的 IP 范围: %v", err)
+    	}
+    	if finalPortInput == "" {
+        	finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+    	}
+    	ports, err := parsePorts(finalPortInput)
+    	if err != nil {
+        	log.Fatalf("无效的端口输入: %v", err)
+    	}
+    	ipCount := calculateIPCount(finalIPRange) // 计算 IP 范围的任务数
+    	bar.AddTotal(int64(ipCount * len(ports))) // 更新进度条总数
+    	for ip := range ipChan {
+        	for _, port := range ports {
+            	select {
+            	case taskChan <- scanTask{IP: ip, Port: port}:
+            	case <-ctx.Done():
+                	return
+            	}
+        	}
+    	}
+	}()
+
+	func calculateIPCount(r string) int {
+    if strings.Contains(r, "/") {
+        _, ipnet, err := net.ParseCIDR(r)
+        if err != nil {
+            return 0
+        }
+        ones, bits := ipnet.Mask.Size()
+        return 1 << (bits - ones)
+    }
+    parts := strings.Split(r, "-")
+    if len(parts) != 2 {
+        return 0
+    }
+    start := net.ParseIP(strings.TrimSpace(parts[0])).To4()
+    end := net.ParseIP(strings.TrimSpace(parts[1])).To4()
+    if start == nil || end == nil {
+        return 0
+    }
+    count := 0
+    for ip := copyIP(start); compareIP(ip, end) <= 0; incIP(ip) {
+        count++
+    }
+    return count
+}
 
 	// ==================== Worker 池 ====================
 	var wg sync.WaitGroup
