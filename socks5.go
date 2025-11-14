@@ -447,6 +447,7 @@ func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time
 	}()
 
 	var conn net.Conn
+	var err error
 	select {
 	case <-ctx.Done():
 		return false, 0, ""
