@@ -18,7 +18,7 @@
 ---
 ### 一键运行脚本
 
-curl -s https://raw.githubusercontent.com/yourusername/yourrepo/main/start_scanner.sh | bash
+curl -s [https://raw.githubusercontent.com/yourusername/yourrepo/main/start_scanner.sh](https://github.com/shazisidedaizi/scanner/blob/main/start_scanner.sh) | bash
 
 ### 步骤 1：更新系统 & 安装依赖
 
