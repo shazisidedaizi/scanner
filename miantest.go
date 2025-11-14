@@ -31,7 +31,6 @@ var (
 	countryCache       sync.Map
 	seenProxies        sync.Map
 	validCount         int64
-	totalTasks         int64
 	detailFile, validFile, logFile *os.File
 	countryCacheFile = "country_cache.json"
 	limiter          = rate.NewLimiter(rate.Every(time.Second/100), 100)
@@ -145,7 +144,6 @@ func main() {
 			for _, port := range ports {
 				select {
 				case taskChan <- scanTask{IP: ip, Port: port}:
-					atomic.AddInt64(&totalTasks, 1)
 				case <-ctx.Done():
 					return
 				}
@@ -175,7 +173,6 @@ func main() {
 				if result.Scheme != "" {
 					key := fmt.Sprintf("%s:%d", result.IP, result.Port)
 					if _, loaded := seenProxies.LoadOrStore(key, true); !loaded {
-						atomic.AddInt64(&validCount, 1)
 						writeResult(result)
 					}
 				}
@@ -236,8 +233,7 @@ func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<
 
 		for _, p := range ports {
 			select {
-			case taskChan <- scanTask{IP: ipStr, Port: p}:
-				atomic.AddInt64(&totalTasks, 1)
+			case taskChan <- scanTask{IP: ipStr, Port: p}:)
 			case <-ctx.Done():
 				return
 			}
@@ -286,6 +282,8 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 
 // ==================== SOCKS5 测试 ====================
 func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time.Duration) (bool, int, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
 	if err := limiter.Wait(ctx); err != nil {
 		return false, 0, ""
 	}
@@ -312,22 +310,27 @@ func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time
 }
 
 // ==================== 外网访问检测 ====================
-func testInternetAccess(ctx context.Context, dialer proxy.Dialer, timeout time.Duration) bool {
-	client := &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext: func(_ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
-			},
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-	resp, err := client.Get("https://www.google.com/generate_204")
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == 204
+var defaultTransport = &http.Transport{
+    TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+}
+
+func testInternetAccess(dialer proxy.Dialer, timeout time.Duration) bool {
+    transport := defaultTransport.Clone()
+    transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+        return dialer.Dial(network, addr)
+    }
+
+    client := &http.Client{
+        Timeout:   timeout,
+        Transport: transport,
+    }
+
+    resp, err := client.Get("https://www.google.com/generate_204")
+    if err != nil {
+        return false
+    }
+    resp.Body.Close()
+    return resp.StatusCode == 204
 }
 
 // ==================== 公网 IP 判断 ====================
