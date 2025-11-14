@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"sync/atomic"
 
 	"github.com/cheggaaa/pb/v3"
 	"golang.org/x/net/proxy"
@@ -195,6 +196,12 @@ func main() {
 	bar.Set("prefix", "Scanning ")
 	bar.Start()
 
+	// 动态增加总数
+	for _, ipPort := range scannedFromURL {
+    	bar.SetTotal(bar.Total() + 1)
+    	taskChan <- ipPort
+	}
+
 	// ==================== Worker 池 ====================
 	var wg sync.WaitGroup
 	for i := 0; i < finalThreads; i++ {
@@ -202,20 +209,23 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for task := range taskChan {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-				result := scanProxy(ctx, task.IP, task.Port, finalTimeout)
-				if result.Scheme != "" {
-					key := fmt.Sprintf("%s:%d", result.IP, result.Port)
-					if _, loaded := seenProxies.LoadOrStore(key, true); !loaded {
-						writeResult(result)
-					}
-				}
-				bar.Increment()
+    			key := task.IP + ":" + strconv.Itoa(task.Port)
+
+    			// ★★★ 第一时间检查是否已扫描 ★★★
+    			if _, loaded := seenProxies.LoadOrStore(key, true); loaded {
+        			bar.Increment()
+        			continue // 直接跳过，不进行任何扫描
+    			}
+
+   		 		result := scanProxy(ctx, task.IP, task.Port, finalTimeout)
+
+    			if result.Scheme != "" {
+        			writeResult(result)
+    			}
+
+    			bar.Increment()
 			}
+
 		}()
 	}
 
@@ -378,19 +388,25 @@ var defaultTransport = &http.Transport{
 }
 
 func testInternetAccess(dialer proxy.Dialer, timeout time.Duration) bool {
-	transport := defaultTransport.Clone()
-	transport.Dial = dialer.Dial
-
-	client := &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-	}
-	resp, err := client.Get("https://www.google.com/generate_204")
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == 204
+    transport := defaultTransport.Clone()
+    transport.Dial = dialer.Dial
+    client := &http.Client{Timeout: timeout, Transport: transport}
+    testURLs := []string{
+        "https://www.google.com/generate_204",
+        "http://httpbin.org/status/204",
+        "https://cloudflare.com/cdn-cgi/trace",
+    }
+    for _, url := range testURLs {
+        resp, err := client.Get(url)
+        if err == nil && resp.StatusCode == 204 {
+            resp.Body.Close()
+            return true
+        }
+        if resp != nil {
+            resp.Body.Close()
+        }
+    }
+    return false
 }
 
 // ==================== 公网 IP 判断 ====================
@@ -438,6 +454,7 @@ func writeResult(r Result) {
 	validMu.Lock()
 	fmt.Fprintf(validFile, "%s:%d\n", r.IP, r.Port)
 	validMu.Unlock()
+	atomic.AddInt64(&validCount, 1)
 }
 
 // ==================== 交互输入 ====================
