@@ -41,7 +41,7 @@ var (
 		{"letmein", "letmein"}, {"sunshine", "sunshine"}, {"baseball", "baseball"},
 		{"princess", "princess"}, {"admin123", "admin123"}, {"superman", "superman"},
 		{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
-		{"test", "test"}, {"demo", "demo"},
+		{"test", "test"}, {"demo", "demo"}
 	}
 	protocols = []string{"socks5", "http", "socks4"}
 
