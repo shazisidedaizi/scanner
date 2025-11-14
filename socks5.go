@@ -36,6 +36,8 @@ var (
 	limiter          = rate.NewLimiter(rate.Every(time.Second/100), 100)
 	detailMu         sync.Mutex
 	validMu          sync.Mutex
+	detailWriter *bufio.Writer
+	validWriter  *bufio.Writer
 )
 
 // ==================== 内置 URL 列表 ====================
@@ -126,8 +128,29 @@ func main() {
 	if err != nil {
 		log.Fatal("打开 proxy_valid.txt 失败: ", err)
 	}
-	defer detailFile.Close()
-	defer validFile.Close()
+	// 用 bufio 包装
+	detailWriter = bufio.NewWriter(detailFile)
+	validWriter = bufio.NewWriter(validFile)
+	defer func() {
+		detailWriter.Flush()
+		validWriter.Flush()
+		detailFile.Close()
+		validFile.Close()
+	}()
+	
+	// 定时 flush
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			detailMu.Lock()
+			detailWriter.Flush()
+			detailMu.Unlock()
+			validMu.Lock()
+			validWriter.Flush()
+			validMu.Unlock()
+		}
+	}()
 
 	log.Printf("[*] 最大并发: %d", finalThreads)
 	log.Printf("[*] 超时时间: %v", finalTimeout)
@@ -169,7 +192,7 @@ func main() {
 		if finalIPRange == "" {
 			finalIPRange = promptIPRange(defaultStart, defaultEnd)
 		}
-		ipChan, err := ipGenerator(finalIPRange)
+		ipChan, err := ipGenerator(ctx, finalIPRange)
 		if err != nil {
 			log.Fatalf("无效的 IP 范围: %v", err)
 		}
@@ -187,8 +210,11 @@ func main() {
 				select {
 				case taskChan <- scanTask{IP: ip, Port: port}:
 				case <-ctx.Done():
-					return
+    				return
+				case <-time.After(time.Second):
+    				log.Printf("[WARN] 任务发送超时: %s:%d", ip, port)
 				}
+
 			}
 		}
 	}()
@@ -438,7 +464,9 @@ func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time
 	if err != nil {
     	return false, 0, ""
 	}
-	lines := strings.Split(string(buf), "\n")
+	if len(lines) == 0 {
+    	return false, 0, ""
+	}
 	exportIP := strings.TrimSpace(lines[len(lines)-1]) // 最后一行通常是 IP
 	
 	if exportIP == "" || !isPublicIP(exportIP) {
@@ -536,14 +564,13 @@ func queryCountry(ip string) string {
 // ==================== 写入结果（实时 flush） ====================
 func writeResult(r Result) {
 	detailMu.Lock()
-	fmt.Fprintf(detailFile, "%s:%d [%s] %s %dms %s\n", r.IP, r.Port, r.Scheme, r.Auth, r.Latency, r.Country)
-	detailFile.Sync()
+	fmt.Fprintf(detailWriter, "%s:%d [%s] %s %dms %s\n", r.IP, r.Port, r.Scheme, r.Auth, r.Latency, r.Country)
 	detailMu.Unlock()
 
 	validMu.Lock()
-	fmt.Fprintf(validFile, "%s:%d\n", r.IP, r.Port)
-	validFile.Sync()
+	fmt.Fprintf(validWriter, "%s:%d\n", r.IP, r.Port)
 	validMu.Unlock()
+
 	atomic.AddInt64(&validCount, 1)
 }
 
@@ -585,14 +612,14 @@ func promptIPRange(start, end string) string {
 }
 
 // ==================== IP/端口解析 ====================
-func ipGenerator(r string) (<-chan string, error) {
-	if strings.Contains(r, "/") {
-		return cidrGenerator(r)
-	}
-	return rangeDashGenerator(r)
+func ipGenerator(ctx context.Context, r string) (<-chan string, error) {
+    if strings.Contains(r, "/") {
+        return cidrGenerator(ctx, r)
+    }
+    return rangeDashGenerator(r)
 }
 
-func cidrGenerator(cidr string) (<-chan string, error) {
+func cidrGenerator(ctx context.Context, cidr string) (<-chan string, error) {
 	_, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return nil, err
@@ -625,7 +652,11 @@ func rangeDashGenerator(r string) (<-chan string, error) {
 	go func() {
 		defer close(ch)
 		for ip := copyIP(start); compareIP(ip, end) <= 0; incIP(ip) {
-			ch <- ip.String()
+    		select {
+    		case ch <- ip.String():
+    		case <-ctx.Done():
+        	return
+    		}
 		}
 	}()
 	return ch, nil
@@ -678,9 +709,6 @@ func parsePorts(input string) ([]int, error) {
 			e, err := strconv.Atoi(strings.TrimSpace(r[1]))
 			if err != nil || e < 1 || e > 65535 {
     			continue // 跳过非法结束端口
-			}
-			if s < 1 || e > 65535 {
-				continue
 			}
 			if s > e {
 				s, e = e, s
