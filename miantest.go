@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -43,7 +44,8 @@ var (
 		{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
 		{"test", "test"}, {"demo", "demo"},
 	}
-	protocols = []string{"socks5","https"}
+	// 目前支持 socks5 与 http(s) 代理探测
+	protocols = []string{"socks5", "https"}
 
 	countryCache      sync.Map
 	validCount  int64
@@ -79,7 +81,10 @@ func loadWeakPasswords(file string) [][2]string {
 			list = append(list, [2]string{parts[0], parts[1]})
 		}
 	}
-	return list
+	if len(list) > 0 {
+		return list
+	}
+	return weakPasswords
 }
 
 // ==================== 结果结构 ====================
@@ -240,6 +245,7 @@ func main() {
 
 	for task := range taskChan {
 		current := atomic.AddInt64(&totalScanned, 1)
+		_ = current
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(t scanTask) {
@@ -468,6 +474,7 @@ func compareIP(a, b net.IP) int {
 
 // ==================== 主扫描逻辑 ====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
+	// 先简单探活端口
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), timeout/2)
 	if err != nil {
 		return Result{}
@@ -490,9 +497,8 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			}
 			return result
 		}
-		if scheme == "socks4" {
-			continue
-		}
+
+		// 如果需要尝试认证（弱密码），则仅对 socks5 分支使用 proxy.Auth
 		for _, pair := range weakPasswords {
 			if ctx.Err() != nil {
 				return result
@@ -522,48 +528,67 @@ func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Aut
 		return false, 0, ""
 	}
 	addr := fmt.Sprintf("%s:%d", ip, port)
-	testURL := "https://ifconfig.me"
+	testURL := "https://ifconfig.me" // 这个返回 body 中是 IP
 
 	switch scheme {
 	case "https":
-    client := &http.Client{Timeout: timeout}
-    var proxyURL *url.URL
-    if auth != nil {
-        proxyURL, _ = url.Parse(fmt.Sprintf("https://%s:%s@%s:%d", auth.User, auth.Password, ip, port))
-    } else {
-        proxyURL, _ = url.Parse(fmt.Sprintf("https://%s:%d", ip, port))
-    }
-    client.Transport = &http.Transport{
-        Proxy: http.ProxyURL(proxyURL),
-        TLSClientConfig: &tls.Config{InsecureSkipVerify: true},  // 跳过证书验证，处理自签名证书
-    }
-    start := time.Now()
-    resp, err := client.Get(testURL)
-    if err != nil {
-        return false, 0, ""
-    }
-    defer resp.Body.Close()
-    body, _ := io.ReadAll(resp.Body)
-    return true, int(time.Since(start).Milliseconds()), strings.TrimSpace(string(body))
+		// 这里把代理当作 HTTP(S) 代理（HTTP CONNECT）
+		client := &http.Client{Timeout: timeout}
+		var proxyURL *url.URL
+		if auth != nil {
+			// 注意：在 URL 中包含用户名密码需要进行 URL-escaping 在真实情况中更安全
+			proxyURL, _ = url.Parse(fmt.Sprintf("http://%s:%s@%s", url.QueryEscape(auth.User), url.QueryEscape(auth.Password), addr))
+		} else {
+			proxyURL, _ = url.Parse(fmt.Sprintf("http://%s", addr))
+		}
+		client.Transport = &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		start := time.Now()
+		resp, err := client.Get(testURL)
+		if err != nil {
+			return false, 0, ""
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return true, int(time.Since(start).Milliseconds()), strings.TrimSpace(string(body))
 	case "socks5":
-    start := time.Now()
-    conn, err := d.Dial("tcp", "ifconfig.me:443")  // 或 :443 如果testURL是HTTPS
-    if err != nil {
-        return false, 0, ""
-    }
-    defer conn.Close()
-    req := "GET / HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n"
-    _, err = conn.Write([]byte(req))
-    if err != nil {
-        return false, 0, ""
-    }
-    body, _ := io.ReadAll(conn)
-    ipMatch := regexp.MustCompile(`\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`).Find(body)
-    exportIP := string(ipMatch)
-    if exportIP == "" {
-        return false, 0, ""
-    }
-    return true, int(time.Since(start).Milliseconds()), exportIP
+		// 使用 x/net/proxy 的 SOCKS5 dialer -> 将其绑定到 http.Transport 的 DialContext
+		var authPtr *proxy.Auth
+		if auth != nil {
+			authPtr = &proxy.Auth{User: auth.User, Password: auth.Password}
+		}
+		dialer, err := proxy.SOCKS5("tcp", addr, authPtr, proxy.Direct)
+		if err != nil {
+			return false, 0, ""
+		}
+		// Transport 使用 dialer
+		transport := &http.Transport{
+			DialContext: func(_ context.Context, network, address string) (net.Conn, error) {
+				return dialer.Dial(network, address)
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		client := &http.Client{
+			Transport: transport,
+			Timeout:   timeout,
+		}
+		start := time.Now()
+		resp, err := client.Get(testURL)
+		if err != nil {
+			return false, 0, ""
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		// 从 body 中找 IP（ifconfig.me 的 body 是纯 IP）
+		// 仍做一个正则保险检查
+		ipMatch := regexp.MustCompile(`\d{1,3}(?:\.\d{1,3}){3}`).Find(body)
+		exportIP := strings.TrimSpace(string(ipMatch))
+		if exportIP == "" {
+			return false, 0, ""
+		}
+		return true, int(time.Since(start).Milliseconds()), exportIP
 	default:
 		return false, 0, ""
 	}
@@ -608,9 +633,24 @@ func loadCountryCache() {
 	if err != nil {
 		return
 	}
-	_ = json.Unmarshal(data, &countryCache)
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		return
+	}
+	for k, v := range m {
+		countryCache.Store(k, v)
+	}
 }
 func saveCountryCache() {
-	data, _ := json.Marshal(countryCache)
+	m := make(map[string]string)
+	countryCache.Range(func(key, value any) bool {
+		ks, ok1 := key.(string)
+		vs, ok2 := value.(string)
+		if ok1 && ok2 {
+			m[ks] = vs
+		}
+		return true
+	})
+	data, _ := json.Marshal(m)
 	_ = os.WriteFile(countryCacheFile, data, 0644)
 }
