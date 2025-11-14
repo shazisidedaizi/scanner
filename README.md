@@ -40,10 +40,10 @@
 
 ```bash
 curl -s https://raw.githubusercontent.com/yourusername/yourrepo/main/start_scanner.sh | bash
-
+---
 #fork仓库，一键脚本的用户名与仓库名改为你自己的
 
-## 手动安装步骤
+### 手动安装步骤
 
 ### 步骤 1：更新系统 & 安装依赖
 
