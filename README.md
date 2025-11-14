@@ -93,7 +93,7 @@ source ~/.bashrc
 
 #验证安装
 
-go version&nbsp;&nbsp;&nbsp;#输出应为：go version go1.24.9 linux/amd64
+go version&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;输出应为：go version go1.24.9 linux/amd64
 
 ###  步骤 3：克隆项目并编译
 #克隆仓库
