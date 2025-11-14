@@ -301,9 +301,9 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 // ==================== SOCKS5 测试 ====================
 func testSocks5WithDialer(dialer proxy.Dialer, timeout time.Duration) (bool, int, string) {
 	// 使用独立限流 context 避免与外部 ctx 冲突
-	if err := limiter.Wait(limiterCtx); err != nil {
-		return false, 0, ""
-	}
+	if err := limiter.Wait(context.Background()); err != nil {
+        return false, 0, ""
+    }
 
 	start := time.Now()
 	conn, err := dialer.Dial("tcp", "ifconfig.me:80")
@@ -333,10 +333,10 @@ var defaultTransport = &http.Transport{
 
 func testInternetAccess(dialer proxy.Dialer, timeout time.Duration) bool {
 	transport := defaultTransport.Clone()
-	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		dialCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	transport.DialContext = func(parentCtx context.Context, network, addr string) (net.Conn, error) {
+    	dialCtx, cancel := context.WithTimeout(context.Background(), timeout)
     	defer cancel()
-		return dialer.Dial(network, addr)
+    	return dialer.DialContext(dialCtx, network, addr)  // 正确！
 	}
 	client := &http.Client{
 		Timeout:   timeout,
