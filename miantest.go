@@ -44,14 +44,12 @@ var (
 		{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
 		{"test", "test"}, {"demo", "demo"},
 	}
-	// 目前支持 socks5 与 http(s) 代理探测
 	protocols = []string{"socks5", "https"}
 
 	countryCache      sync.Map
 	validCount  int64
 	seenProxies sync.Map
 
-	// 全局文件句柄
 	detailFile *os.File
 	validFile  *os.File
 	logFile    *os.File
@@ -62,30 +60,6 @@ var (
 	detailMu sync.Mutex
 	validMu  sync.Mutex
 )
-
-// ==================== 加载弱密码函数 ====================
-func loadWeakPasswords(file string) [][2]string {
-	data, err := os.ReadFile(file)
-	if err != nil {
-		log.Printf("Warning: failed to load weak passwords file: %v", err)
-		return weakPasswords
-	}
-	var list [][2]string
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) == 2 {
-			list = append(list, [2]string{parts[0], parts[1]})
-		}
-	}
-	if len(list) > 0 {
-		return list
-	}
-	return weakPasswords
-}
 
 // ==================== 结果结构 ====================
 type Result struct {
@@ -179,55 +153,65 @@ func main() {
 
 	go func() {
 		defer close(taskChan)
-		// URL 加载优先
 		if finalURL != "" {
 			ips, portsFromURL, err := fetchAddrsFromURLStream(finalURL, finalTimeout)
 			if err != nil {
-				log.Printf("URL 加载失败 → 回退交互输入: %v", err)
-			} else {
-				if len(portsFromURL) == 0 {
-					if finalPortInput == "" {
-						finalPortInput = prompt("URL 未包含端口，请输入端口（默认: 1080）: ", "1080")
-					}
-					ports, _ := parsePorts(finalPortInput)
-					for _, ip := range ips {
-						for _, p := range ports {
-							select {
-							case taskChan <- scanTask{IP: ip, Port: p}:
-							case <-ctx.Done():
-								return
-							}
-						}
-					}
-				} else {
-					for _, ip := range ips {
-						for _, p := range portsFromURL {
-							select {
-							case taskChan <- scanTask{IP: ip, Port: p}:
-							case <-ctx.Done():
-								return
-							}
+				log.Printf("URL 加载失败 → 进入交互输入: %v", err)
+				if finalIPRange == "" {
+					finalIPRange = promptIPRange(defaultStart, defaultEnd)
+				}
+				if finalPortInput == "" {
+					finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
+				}
+				ports, _ := parsePorts(finalPortInput)
+				ipChan, _ := ipGenerator(finalIPRange)
+				for ip := range ipChan {
+					for _, p := range ports {
+						select {
+						case taskChan <- scanTask{IP: ip, Port: p}:
+						case <-ctx.Done():
+							return
 						}
 					}
 				}
 				return
 			}
+			if len(ips) > 0 && len(portsFromURL) == 0 {
+				if finalPortInput == "" {
+					finalPortInput = prompt("URL 未包含端口，请输入端口（默认: "+defaultPort+"): ", defaultPort)
+				}
+				ports, _ := parsePorts(finalPortInput)
+				for _, ip := range ips {
+					for _, p := range ports {
+						select {
+						case taskChan <- scanTask{IP: ip, Port: p}:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
+			} else {
+				for _, ip := range ips {
+					for _, p := range portsFromURL {
+						select {
+						case taskChan <- scanTask{IP: ip, Port: p}:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
+			}
+			return
 		}
 
 		if finalIPRange == "" {
 			finalIPRange = promptIPRange(defaultStart, defaultEnd)
 		}
-		ipChan, err := ipGenerator(finalIPRange)
-		if err != nil {
-			log.Printf("IP 范围解析失败: %v", err)
-			return
-		}
-
+		ipChan, _ := ipGenerator(finalIPRange)
 		if finalPortInput == "" {
 			finalPortInput = prompt("端口（默认: "+defaultPort+"): ", defaultPort)
 		}
 		ports, _ := parsePorts(finalPortInput)
-
 		for ip := range ipChan {
 			for _, port := range ports {
 				select {
@@ -251,13 +235,11 @@ func main() {
 		go func(t scanTask) {
 			defer wg.Done()
 			defer func() { <-sem }()
-
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
-
 			result := scanProxy(ctx, t.IP, t.Port, finalTimeout)
 			if result.Scheme != "" {
 				key := fmt.Sprintf("%s:%d", result.IP, result.Port)
@@ -275,9 +257,9 @@ func main() {
 	log.Printf("[+] 已保存 %d 个代理 → proxy_valid.txt", atomic.LoadInt64(&validCount))
 }
 
-// ==================== 从 URL 流式加载 ====================
+// ==================== URL 流式加载 ====================
 func fetchAddrsFromURLStream(u string, timeout time.Duration) ([]string, []int, error) {
-	log.Printf("[*] 正在从 URL 流式加载代理列表: %s", u)
+	log.Printf("[*] 正在从 URL 加载代理列表: %s", u)
 	client := &http.Client{
 		Timeout:       timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
@@ -294,7 +276,6 @@ func fetchAddrsFromURLStream(u string, timeout time.Duration) ([]string, []int, 
 	scanner := bufio.NewScanner(resp.Body)
 	var ips []string
 	portSet := make(map[int]bool)
-
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.Contains(line, ":") {
@@ -368,8 +349,6 @@ func ipGenerator(r string) (<-chan string, error) {
 	}
 	return rangeDashGenerator(r)
 }
-
-// CIDR 生成器
 func cidrGenerator(cidr string) (<-chan string, error) {
 	_, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -384,8 +363,6 @@ func cidrGenerator(cidr string) (<-chan string, error) {
 	}()
 	return ch, nil
 }
-
-// Dash 范围生成器（安全版）
 func rangeDashGenerator(r string) (<-chan string, error) {
 	parts := strings.Split(r, "-")
 	if len(parts) != 2 {
@@ -406,8 +383,36 @@ func rangeDashGenerator(r string) (<-chan string, error) {
 	}()
 	return ch, nil
 }
+func copyIP(ip net.IP) net.IP {
+	dup := make(net.IP, len(ip))
+	copy(dup, ip)
+	return dup
+}
+func incIP(ip net.IP) {
+	for j := len(ip) - 1; j >= 0; j-- {
+		ip[j]++
+		if ip[j] > 0 {
+			break
+		}
+	}
+}
+func compareIP(a, b net.IP) int {
+	a = a.To4()
+	b = b.To4()
+	if a == nil || b == nil {
+		return strings.Compare(a.String(), b.String())
+	}
+	for i := 0; i < 4; i++ {
+		if a[i] < b[i] {
+			return -1
+		} else if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
+}
 
-// ==================== 安全端口解析 ====================
+// ==================== 端口解析 ====================
 func parsePorts(input string) ([]int, error) {
 	var ports []int
 	input = strings.ReplaceAll(input, ",", " ")
@@ -442,39 +447,32 @@ func parsePorts(input string) ([]int, error) {
 	return ports, nil
 }
 
-// ==================== IP 辅助函数 ====================
-func copyIP(ip net.IP) net.IP {
-	dup := make(net.IP, len(ip))
-	copy(dup, ip)
-	return dup
-}
-func incIP(ip net.IP) {
-	for j := len(ip) - 1; j >= 0; j-- {
-		ip[j]++
-		if ip[j] > 0 {
-			break
+// ==================== 加载弱密码 ====================
+func loadWeakPasswords(file string) [][2]string {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		log.Printf("Warning: failed to load weak passwords file: %v", err)
+		return weakPasswords
+	}
+	var list [][2]string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 {
+			list = append(list, [2]string{parts[0], parts[1]})
 		}
 	}
-}
-func compareIP(a, b net.IP) int {
-	a = a.To4()
-	b = b.To4()
-	if a == nil || b == nil {
-		return strings.Compare(a.String(), b.String())
+	if len(list) > 0 {
+		return list
 	}
-	for i := 0; i < 4; i++ {
-		if a[i] < b[i] {
-			return -1
-		} else if a[i] > b[i] {
-			return 1
-		}
-	}
-	return 0
+	return weakPasswords
 }
 
-// ==================== 主扫描逻辑 ====================
+// ==================== 扫描代理 ====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
-	// 先简单探活端口
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), timeout/2)
 	if err != nil {
 		return Result{}
@@ -487,7 +485,7 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			return result
 		}
 		ok, lat, exportIP := testProxy(ctx, scheme, ip, port, nil, timeout)
-		if ok && isPublicIP(exportIP) {
+		if ok && isPublicIP(exportIP) && testInternetAccess(scheme, ip, port, nil, timeout) {
 			result.Scheme = scheme
 			result.Latency = lat
 			result.ExportIP = exportIP
@@ -498,14 +496,13 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			return result
 		}
 
-		// 如果需要尝试认证（弱密码），则仅对 socks5 分支使用 proxy.Auth
 		for _, pair := range weakPasswords {
 			if ctx.Err() != nil {
 				return result
 			}
 			auth := &proxy.Auth{User: pair[0], Password: pair[1]}
 			ok, lat, exportIP := testProxy(ctx, scheme, ip, port, auth, timeout)
-			if ok && isPublicIP(exportIP) {
+			if ok && isPublicIP(exportIP) && testInternetAccess(scheme, ip, port, auth, timeout) {
 				result.Scheme = scheme
 				result.Latency = lat
 				result.ExportIP = exportIP
@@ -527,78 +524,73 @@ func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Aut
 	if err := limiter.Wait(ctx); err != nil {
 		return false, 0, ""
 	}
-	addr := fmt.Sprintf("%s:%d", ip, port)
-	testURL := "https://ifconfig.me" // 这个返回 body 中是 IP
-
+	start := time.Now()
+	exportIP := ""
 	switch scheme {
-	case "https":
-		// 这里把代理当作 HTTP(S) 代理（HTTP CONNECT）
-		client := &http.Client{Timeout: timeout}
-		var proxyURL *url.URL
-		if auth != nil {
-			// 注意：在 URL 中包含用户名密码需要进行 URL-escaping 在真实情况中更安全
-			proxyURL, _ = url.Parse(fmt.Sprintf("http://%s:%s@%s", url.QueryEscape(auth.User), url.QueryEscape(auth.Password), addr))
-		} else {
-			proxyURL, _ = url.Parse(fmt.Sprintf("http://%s", addr))
-		}
-		client.Transport = &http.Transport{
-			Proxy:           http.ProxyURL(proxyURL),
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-		start := time.Now()
-		resp, err := client.Get(testURL)
-		if err != nil {
-			return false, 0, ""
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return true, int(time.Since(start).Milliseconds()), strings.TrimSpace(string(body))
 	case "socks5":
-		// 使用 x/net/proxy 的 SOCKS5 dialer -> 将其绑定到 http.Transport 的 DialContext
-		var authPtr *proxy.Auth
-		if auth != nil {
-			authPtr = &proxy.Auth{User: auth.User, Password: auth.Password}
-		}
-		dialer, err := proxy.SOCKS5("tcp", addr, authPtr, proxy.Direct)
+		addr := fmt.Sprintf("%s:%d", ip, port)
+		dialer, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
 		if err != nil {
 			return false, 0, ""
 		}
-		// Transport 使用 dialer
-		transport := &http.Transport{
-			DialContext: func(_ context.Context, network, address string) (net.Conn, error) {
-				return dialer.Dial(network, address)
-			},
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		conn, err := dialer.Dial("tcp", "ifconfig.me:80")
+		if err != nil {
+			return false, 0, ""
 		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(timeout))
+		_, _ = fmt.Fprintf(conn, "GET /ip HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n")
+		buf := make([]byte, 1024)
+		n, _ := conn.Read(buf)
+		exportIP = string(buf[:n])
+	case "https":
 		client := &http.Client{
-			Transport: transport,
-			Timeout:   timeout,
+			Timeout: timeout,
+			Transport: &http.Transport{
+				Proxy: http.ProxyURL(&url.URL{
+					Scheme: scheme,
+					Host:   fmt.Sprintf("%s:%d", ip, port),
+				}),
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
 		}
-		start := time.Now()
-		resp, err := client.Get(testURL)
+		resp, err := client.Get("https://ifconfig.me/ip")
 		if err != nil {
 			return false, 0, ""
 		}
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		// 从 body 中找 IP（ifconfig.me 的 body 是纯 IP）
-		// 仍做一个正则保险检查
-		ipMatch := regexp.MustCompile(`\d{1,3}(?:\.\d{1,3}){3}`).Find(body)
-		exportIP := strings.TrimSpace(string(ipMatch))
-		if exportIP == "" {
-			return false, 0, ""
-		}
-		return true, int(time.Since(start).Milliseconds()), exportIP
-	default:
-		return false, 0, ""
+		b, _ := io.ReadAll(resp.Body)
+		exportIP = string(b)
 	}
+	return exportIP != "", int(time.Since(start).Milliseconds()), strings.TrimSpace(exportIP)
 }
 
-// ==================== 结果保存 ====================
+// ==================== 外网可访问性检测 ====================
+func testInternetAccess(scheme, ip string, port int, auth *proxy.Auth, timeout time.Duration) bool {
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(&url.URL{
+				Scheme: scheme,
+				Host:   fmt.Sprintf("%s:%d", ip, port),
+			}),
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	resp, err := client.Get("https://www.google.com/generate_204")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 204
+}
+
+// ==================== 写入结果 ====================
 func writeResult(r Result) {
 	detailMu.Lock()
 	defer detailMu.Unlock()
 	fmt.Fprintf(detailFile, "%+v\n", r)
+
 	validMu.Lock()
 	defer validMu.Unlock()
 	fmt.Fprintf(validFile, "%s://%s:%d\n", r.Scheme, r.IP, r.Port)
@@ -621,7 +613,7 @@ func isPublicIP(ipStr string) bool {
 	return true
 }
 
-// ==================== 国家解析 ====================
+// ==================== 国家缓存管理 ====================
 func getCountry(ip string) string {
 	if v, ok := countryCache.Load(ip); ok {
 		return v.(string)
