@@ -233,7 +233,7 @@ func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<
 
 		for _, p := range ports {
 			select {
-			case taskChan <- scanTask{IP: ipStr, Port: p}:)
+			case taskChan <- scanTask{IP: ipStr, Port: p})
 			case <-ctx.Done():
 				return
 			}
@@ -244,8 +244,20 @@ func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<
 // ==================== 扫描代理 ====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
 	result := Result{IP: ip, Port: port}
-
 	addr := fmt.Sprintf("%s:%d", ip, port)
+
+	{
+		auth := &proxy.Auth{User: "", Password: ""}
+		dialer, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
+		if err == nil {
+			ok, _, _ := testSocks5WithDialer(ctx, dialer, timeout)
+			if ok {
+				// 空密码鉴权成功 → 说明节点配置错误，直接丢弃，不进入弱扫
+				return result
+			}
+		}
+	}
+
 	for _, pair := range weakPasswordsSlice {
 		if ctx.Err() != nil {
 			return result
@@ -257,36 +269,44 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			continue
 		}
 
+		// SOCKS5 握手
 		ok, lat, exportIP := testSocks5WithDialer(ctx, dialer, timeout)
 		if !ok || !isPublicIP(exportIP) {
 			continue
 		}
 
+		// 外网访问测试（优化后的）
 		if !testInternetAccess(ctx, dialer, timeout) {
 			continue
 		}
 
+		// 命中弱密码 → 填充结果
 		result.Scheme = "socks5"
 		result.Latency = lat
 		result.ExportIP = exportIP
+
 		result.Country = getCountry(exportIP)
 		if result.Country == "XX" {
 			result.Country = getCountry(ip)
 		}
+
 		result.Auth = fmt.Sprintf("%s:%s", pair[0], pair[1])
 		result.IsWeak = true
 		return result
 	}
+
 	return result
 }
 
 // ==================== SOCKS5 测试 ====================
-func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time.Duration) (bool, int, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+func testSocks5WithDialer(dialer proxy.Dialer, timeout time.Duration) (bool, int, string) {
+	// 使用独立限流 context 避免与外部 ctx 冲突
+	limiterCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := limiter.Wait(ctx); err != nil {
+	if err := limiter.Wait(limiterCtx); err != nil {
 		return false, 0, ""
 	}
+
 	start := time.Now()
 	conn, err := dialer.Dial("tcp", "ifconfig.me:80")
 	if err != nil {
@@ -295,7 +315,7 @@ func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time
 	defer conn.Close()
 
 	conn.SetDeadline(time.Now().Add(timeout))
-	_, _ = fmt.Fprintf(conn, "GET /ip HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n")
+	fmt.Fprintf(conn, "GET /ip HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n")
 
 	buf := make([]byte, 128)
 	n, err := conn.Read(buf)
@@ -308,29 +328,26 @@ func testSocks5WithDialer(ctx context.Context, dialer proxy.Dialer, timeout time
 	}
 	return true, int(time.Since(start).Milliseconds()), exportIP
 }
-
 // ==================== 外网访问检测 ====================
 var defaultTransport = &http.Transport{
-    TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 }
 
 func testInternetAccess(dialer proxy.Dialer, timeout time.Duration) bool {
-    transport := defaultTransport.Clone()
-    transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-        return dialer.Dial(network, addr)
-    }
-
-    client := &http.Client{
-        Timeout:   timeout,
-        Transport: transport,
-    }
-
-    resp, err := client.Get("https://www.google.com/generate_204")
-    if err != nil {
-        return false
-    }
-    resp.Body.Close()
-    return resp.StatusCode == 204
+	transport := defaultTransport.Clone()
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.Dial(network, addr)
+	}
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+	resp, err := client.Get("https://www.google.com/generate_204")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 204
 }
 
 // ==================== 公网 IP 判断 ====================
@@ -526,7 +543,20 @@ func loadWeakPasswords(file string) [][2]string {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		log.Printf("Warning: failed to load weak passwords file: %v", err)
-		return [][2]string{{"guest", "guest"}, {"admin", "admin"}, {"root", "root"}}
+		return [][2]string{		
+							{"123456", "123456"}, {"password", "password"}, {"admin", "admin"},
+							{"admin", "123456"}, {"root", "root"}, {"root", "123456"},
+							{"123456789", "123456789"}, {"qwerty", "qwerty"}, {"12345", "12345"},
+							{"12345678", "12345678"}, {"111111", "111111"}, {"user", "user"},
+							{"user", "password"}, {"123", "123"}, {"proxy", "proxy"}, {"socks5", "socks5"},
+							{"1234567", "1234567"}, {"iloveyou", "iloveyou"}, {"123123", "123123"},
+							{"000000", "000000"}, {"welcome", "welcome"}, {"secret", "secret"},
+							{"dragon", "dragon"}, {"monkey", "monkey"}, {"football", "football"},
+							{"letmein", "letmein"}, {"sunshine", "sunshine"}, {"baseball", "baseball"},
+							{"princess", "princess"}, {"admin123", "admin123"}, {"superman", "superman"},
+							{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
+							{"test", "test"}, {"demo", "demo"}
+						  }
 	}
 	var list [][2]string
 	for _, line := range strings.Split(string(data), "\n") {
