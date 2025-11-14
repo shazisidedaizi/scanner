@@ -147,7 +147,7 @@ cat result_detail.txt
 
 # 感谢结语 (Acknowledgments)
 
-这是我的第一个开源项目，如果您发现任何不当之处或有改进建议，请随时与我联系。感谢您对本项目（Proxy Scanner Go Edition）的关注和使用！
+感谢您对本项目（Proxy Scanner Go Edition）的关注和使用！
 
 - **特别鸣谢**：  
   本代码修改自OTC大佬的项目https://github.com/avotcorg/scamnet，感谢OTC大佬@avotcorg的贡献。
