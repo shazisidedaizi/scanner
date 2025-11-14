@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,7 +43,6 @@ var (
 		{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
 		{"test", "test"}, {"demo", "demo"},
 	}
-	protocols = []string{"socks5", "https"}
 
 	countryCache      sync.Map
 	validCount  int64
@@ -471,109 +469,70 @@ func loadWeakPasswords(file string) [][2]string {
 	return weakPasswords
 }
 
-// ==================== 扫描代理 ====================
+// ==================== 扫描代理（只保留带认证 SOCKS5） ====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), timeout/2)
-	if err != nil {
-		return Result{}
-	}
-	conn.Close()
-
 	result := Result{IP: ip, Port: port}
-	for _, scheme := range protocols {
+
+	for _, pair := range weakPasswords {
 		if ctx.Err() != nil {
 			return result
 		}
-		ok, lat, exportIP := testProxy(ctx, scheme, ip, port, nil, timeout)
-		if ok && isPublicIP(exportIP) && testInternetAccess(scheme, ip, port, nil, timeout) {
-			result.Scheme = scheme
+		auth := &proxy.Auth{User: pair[0], Password: pair[1]}
+		ok, lat, exportIP := testProxy(ctx, "socks5", ip, port, auth, timeout)
+		if ok && isPublicIP(exportIP) && testInternetAccess("socks5", ip, port, auth, timeout) {
+			result.Scheme = "socks5"
 			result.Latency = lat
 			result.ExportIP = exportIP
 			result.Country = getCountry(exportIP)
 			if result.Country == "XX" {
 				result.Country = getCountry(ip)
 			}
+			result.Auth = fmt.Sprintf("%s:%s", pair[0], pair[1])
+			result.IsWeak = true
 			return result
-		}
-
-		for _, pair := range weakPasswords {
-			if ctx.Err() != nil {
-				return result
-			}
-			auth := &proxy.Auth{User: pair[0], Password: pair[1]}
-			ok, lat, exportIP := testProxy(ctx, scheme, ip, port, auth, timeout)
-			if ok && isPublicIP(exportIP) && testInternetAccess(scheme, ip, port, auth, timeout) {
-				result.Scheme = scheme
-				result.Latency = lat
-				result.ExportIP = exportIP
-				result.Country = getCountry(exportIP)
-				if result.Country == "XX" {
-					result.Country = getCountry(ip)
-				}
-				result.Auth = fmt.Sprintf("%s:%s", pair[0], pair[1])
-				result.IsWeak = true
-				return result
-			}
 		}
 	}
 	return result
 }
 
-// ==================== 协议测试 ====================
+// ==================== SOCKS5 测试 ====================
 func testProxy(ctx context.Context, scheme, ip string, port int, auth *proxy.Auth, timeout time.Duration) (bool, int, string) {
+	if scheme != "socks5" || auth == nil {
+		return false, 0, ""
+	}
 	if err := limiter.Wait(ctx); err != nil {
 		return false, 0, ""
 	}
 	start := time.Now()
-	exportIP := ""
-	switch scheme {
-	case "socks5":
-		addr := fmt.Sprintf("%s:%d", ip, port)
-		dialer, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
-		if err != nil {
-			return false, 0, ""
-		}
-		conn, err := dialer.Dial("tcp", "ifconfig.me:80")
-		if err != nil {
-			return false, 0, ""
-		}
-		defer conn.Close()
-		conn.SetDeadline(time.Now().Add(timeout))
-		_, _ = fmt.Fprintf(conn, "GET /ip HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n")
-		buf := make([]byte, 1024)
-		n, _ := conn.Read(buf)
-		exportIP = string(buf[:n])
-	case "https":
-		client := &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				Proxy: http.ProxyURL(&url.URL{
-					Scheme: scheme,
-					Host:   fmt.Sprintf("%s:%d", ip, port),
-				}),
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}
-		resp, err := client.Get("https://ifconfig.me/ip")
-		if err != nil {
-			return false, 0, ""
-		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		exportIP = string(b)
+	addr := fmt.Sprintf("%s:%d", ip, port)
+	dialer, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
+	if err != nil {
+		return false, 0, ""
 	}
-	return exportIP != "", int(time.Since(start).Milliseconds()), strings.TrimSpace(exportIP)
+	conn, err := dialer.Dial("tcp", "ifconfig.me:80")
+	if err != nil {
+		return false, 0, ""
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(timeout))
+	_, _ = fmt.Fprintf(conn, "GET /ip HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n")
+	buf := make([]byte, 1024)
+	n, _ := conn.Read(buf)
+	exportIP := strings.TrimSpace(string(buf[:n]))
+	return exportIP != "", int(time.Since(start).Milliseconds()), exportIP
 }
 
-// ==================== 外网可访问性检测 ====================
+// ==================== 外网访问检测 ====================
 func testInternetAccess(scheme, ip string, port int, auth *proxy.Auth, timeout time.Duration) bool {
+	if scheme != "socks5" || auth == nil {
+		return false
+	}
 	client := &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			Proxy: http.ProxyURL(&url.URL{
-				Scheme: scheme,
-				Host:   fmt.Sprintf("%s:%d", ip, port),
-			}),
+			Proxy: func(_ *http.Request) (*url.URL, error) {
+				return url.Parse(fmt.Sprintf("socks5://%s:%s@%s:%d", auth.User, auth.Password, ip, port))
+			},
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
@@ -585,40 +544,28 @@ func testInternetAccess(scheme, ip string, port int, auth *proxy.Auth, timeout t
 	return resp.StatusCode == 204
 }
 
-// ==================== 写入结果 ====================
-func writeResult(r Result) {
-	detailMu.Lock()
-	defer detailMu.Unlock()
-	fmt.Fprintf(detailFile, "%+v\n", r)
-
-	validMu.Lock()
-	defer validMu.Unlock()
-	fmt.Fprintf(validFile, "%s://%s:%d\n", r.Scheme, r.IP, r.Port)
+// ==================== 国家信息 ====================
+func getCountry(ip string) string {
+	if val, ok := countryCache.Load(ip); ok {
+		return val.(string)
+	}
+	country := queryCountry(ip)
+	countryCache.Store(ip, country)
+	return country
 }
-
-// ==================== 公网 IP 判断 ====================
+func queryCountry(ip string) string {
+	// 简化，实际可使用 geoip 库
+	return "XX"
+}
 func isPublicIP(ipStr string) bool {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
 		return false
 	}
-	ip4 := ip.To4()
-	if ip4 == nil {
-		return false
-	}
-	if ip4[0] == 10 || (ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31) ||
-		(ip4[0] == 192 && ip4[1] == 168) || (ip4[0] == 169 && ip4[1] == 254) {
+	if ip.IsLoopback() || ip.IsPrivate() {
 		return false
 	}
 	return true
-}
-
-// ==================== 国家缓存管理 ====================
-func getCountry(ip string) string {
-	if v, ok := countryCache.Load(ip); ok {
-		return v.(string)
-	}
-	return "XX"
 }
 func loadCountryCache() {
 	data, err := os.ReadFile(countryCacheFile)
@@ -635,14 +582,22 @@ func loadCountryCache() {
 }
 func saveCountryCache() {
 	m := make(map[string]string)
-	countryCache.Range(func(key, value any) bool {
-		ks, ok1 := key.(string)
-		vs, ok2 := value.(string)
-		if ok1 && ok2 {
-			m[ks] = vs
-		}
+	countryCache.Range(func(k, v interface{}) bool {
+		m[k.(string)] = v.(string)
 		return true
 	})
-	data, _ := json.Marshal(m)
+	data, _ := json.MarshalIndent(m, "", "  ")
 	_ = os.WriteFile(countryCacheFile, data, 0644)
+}
+
+// ==================== 写入结果 ====================
+func writeResult(r Result) {
+	detailMu.Lock()
+	defer detailMu.Unlock()
+	line := fmt.Sprintf("%s:%d [%s] %s %dms %s\n", r.IP, r.Port, r.Scheme, r.Auth, r.Latency, r.Country)
+	detailFile.WriteString(line)
+
+	validMu.Lock()
+	defer validMu.Unlock()
+	validFile.WriteString(fmt.Sprintf("%s:%d\n", r.IP, r.Port))
 }
