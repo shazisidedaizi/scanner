@@ -1,0 +1,33 @@
+name: Build Go Program
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build for All Platforms
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.22"
+
+      - name: Build binaries
+        run: |
+          mkdir -p build
+          GOOS=linux   GOARCH=amd64 go build -o build/scanner-linux-amd64
+          GOOS=windows GOARCH=amd64 go build -o build/scanner-windows-amd64.exe
+          GOOS=darwin  GOARCH=amd64 go build -o build/scanner-darwin-amd64
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-build
+          path: build/*
