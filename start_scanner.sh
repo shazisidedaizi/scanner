@@ -18,14 +18,20 @@ if ! command -v go &> /dev/null; then
     wget https://go.dev/dl/go1.24.9.linux-amd64.tar.gz
     sudo tar -C /usr/local -xzf go1.24.9.linux-amd64.tar.gz
     rm go1.24.9.linux-amd64.tar.gz
-
-    # 设置环境变量
+    
+    # 显式设置当前 shell 的 PATH（无需依赖 .bashrc）
+    export PATH=/usr/local/go/bin:$PATH
+    export GOPATH=$HOME/go
+    export GOBIN=$GOPATH/bin
+    
+    # 如果想持久化到所有 shell，也追加到 .bashrc 或 .profile
     if ! grep -q "/usr/local/go/bin" ~/.bashrc; then
         echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc
         echo 'export GOPATH=$HOME/go' >> ~/.bashrc
         echo 'export GOBIN=$GOPATH/bin' >> ~/.bashrc
     fi
-    source ~/.bashrc
+    
+    # 验证
     go version
 else
     echo "Go 已安装，版本: $(go version)"
