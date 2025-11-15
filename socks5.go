@@ -46,7 +46,10 @@ var builtInURLs = []string{
     "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt",
 
     // ProxyScrape (updates every minute, TXT format)
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all",
+    "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=socks5&timeout=10000&country=all&anonymity=elite&limit=2000",
+
+	// Proxy-list (update at least 10 times daily, TXT format)
+	"https://www.proxy-list.download/api/v1/get?type=socks5&anon=elite",
 }
 
 // ==================== 结果结构 ====================
