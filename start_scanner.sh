@@ -49,3 +49,16 @@ ls -lh scanner
 # 步骤4: 启动程序（交互式）
 echo "启动 scanner..."
 nohup ./scanner -threads 1000 -timeout 5s > scan.log 2>&1 &
+
+echo ""
+echo "============================================="
+echo "🎉 scanner 已启动，并在后台运行"
+echo "📌 常用运行管理命令如下："
+echo "---------------------------------------------"
+echo "查看运行状态：        ps aux | grep scanner"
+echo "查看实时日志：        tail -f scan.log"
+echo "安全停止 scanner：    pkill scanner"
+echo "查看有效代理：        cat proxy_valid.txt"
+echo "查看详细日志：        cat result_detail.txt"
+echo "============================================="
+echo ""
