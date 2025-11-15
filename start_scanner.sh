@@ -7,8 +7,8 @@
 
 set -e  # 遇到错误时退出
 
-# 步骤1: 更新系统并安装依赖
-echo "更新系统并安装依赖..."
+# 步骤1: 更新系统
+echo "更新系统..."
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y git curl wget build-essential upx-ucl
 
