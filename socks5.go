@@ -45,11 +45,13 @@ var builtInURLs = []string{
     // Proxifly (GitHub CDN, updates every 5 minutes)
     "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt",
 
-    // ProxyScrape (updates every minute, TXT format)
-    "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=socks5&timeout=10000&country=all&anonymity=elite&limit=2000",
-
 	// Proxy-list (update at least 10 times daily, TXT format)
 	"https://www.proxy-list.download/api/v1/get?type=socks5&anon=elite",
+
+	// Proxy-list (update every 30 minutes)
+	"https://raw.githubusercontent.com/iplocate/free-proxy-list/refs/heads/main/protocols/socks5.txt",
+
+	"https://sockslist.us/Raw",
 }
 
 // ==================== 结果结构 ====================
