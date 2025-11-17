@@ -125,6 +125,8 @@ ls -lh scanner
 
 nohup ./scanner -ip-range 157.254.32.0-157.254.52.255 -port 1080 -threads 1000 -timeout 5s > scan.log 2>&1 &
 
+或nohup ./scanner -threads 1000 -timeout 5s > scan.log 2>&1 &
+
 #通过url获取ip进行扫描
 
 ./scanner -url=https://raw.githubusercontent.com/avotcorg/scamnet/refs/heads/main/demo.txt -threads=1000 -timeout=5s
