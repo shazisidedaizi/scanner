@@ -375,29 +375,18 @@ func streamAddrsFromURL(ctx context.Context, u, portInput string, taskChan chan<
 	return loaded, taskCount
 }
 
-// ==================== 扫描代理 ====================
+// ==================== 扫描代理====================
 func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) Result {
 	result := Result{IP: ip, Port: port}
 	addr := fmt.Sprintf("%s:%d", ip, port)
 
-	// ================== 尝试空密码 ==================
-	select {
-	case <-ctx.Done():
-		return result
-	default:
-		auth := &proxy.Auth{User: "", Password: ""}
-		dialer, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
-		if err == nil {
-			ok, _, _ := testSocks5WithDialer(ctx, dialer, timeout)
-			if ok {
-				// 空密码成功，直接丢弃，不记录
-				log.Printf("[INFO] 空密码可用节点，丢弃: %s:%d", ip, port)
-				return Result{}
-			}
-		}
+	// 方案一：先多次尝试空密码，任何一次成功都判定为公开代理并丢弃
+	if checkIfOpenProxy(ctx, ip, port, timeout) {
+		log.Printf("[INFO] 检测到公开无认证代理，已丢弃: %s:%d", ip, port)
+		return Result{} // 直接丢弃整个节点
 	}
 
-	// ================== 尝试弱密码 ==================
+	// 开始弱密码爆破
 	for _, pair := range weakPasswordsSlice {
 		select {
 		case <-ctx.Done():
@@ -416,27 +405,71 @@ func scanProxy(ctx context.Context, ip string, port int, timeout time.Duration) 
 			continue
 		}
 
-		// 使用这个成功联通的弱密码去测试外网访问
+		// 外网访问测试（和你原来完全一致）
 		if !testInternetAccess(ctx, dialer, timeout) {
-			log.Printf("[INFO] 弱密码成功，但外网访问失败，丢弃: %s:%d (%s:%s)", ip, port, pair[0], pair[1])
-			return Result{}
+			log.Printf("[INFO] 弱密码成功但外网访问失败，丢弃: %s:%d (%s:%s)", ip, port, pair[0], pair[1])
+			continue
 		}
 
-		// 外网访问成功，记录结果
+		// 方案二：反向验证 —— 用空密码再试一次，看看是不是其实根本不需要密码
+		emptyDialer, _ := proxy.SOCKS5("tcp", addr, &proxy.Auth{}, proxy.Direct) // 空认证
+		if emptyDialer != nil {
+			if openOk, _, _ := testSocks5WithDialer(ctx, emptyDialer, timeout); openOk {
+				log.Printf("[WARN] 弱密码成功但空密码也能通，判定为公开代理丢弃: %s:%d (%s:%s)", 
+					ip, port, pair[0], pair[1])
+				return Result{} // 整条代理直接丢弃，防止公开代理混进来
+			}
+		}
+
+		// 到这里说明：真的需要这个用户名密码才能通
 		result.Scheme = "socks5"
 		result.Latency = lat
 		result.ExportIP = exportIP
 		result.Country = getCountry(exportIP)
 		if result.Country == "XX" {
-			result.Country = getCountry(ip)
+			result.Country = getCountry(ip) // 回退查询节点IP的国家
 		}
 		result.Auth = fmt.Sprintf("%s:%s", pair[0], pair[1])
 		result.IsWeak = true
-		return result
+
+		return result // 成功找到一个真正的弱密码代理，立即返回
 	}
 
-	// 所有弱密码尝试失败，返回空结果
-	return Result{}
+	return Result{} // 所有密码都试完都没成功
+}
+
+// ==================== 方案一：多次空密码检测公开代理（最多3次，绝对安全） ====================
+func checkIfOpenProxy(ctx context.Context, ip string, port int, timeout time.Duration) bool {
+	addr := fmt.Sprintf("%s:%d", ip, port)
+	const maxAttempts = 3 // 可自行改为 2~5
+
+	for i := 0; i < maxAttempts; i++ {
+		if i > 0 {
+			time.Sleep(time.Millisecond * time.Duration(200*(i+1))) // 轻微退避
+		}
+
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+
+		dialer, err := proxy.SOCKS5("tcp", addr, &proxy.Auth{}, proxy.Direct) // 空认证
+		if err != nil {
+			continue
+		}
+
+		ok, _, exportIP := testSocks5WithDialer(ctx, dialer, timeout)
+		if !ok || !isPublicIP(exportIP) {
+			continue
+		}
+
+		// 额外确认能正常访问外网
+		if testInternetAccess(ctx, dialer, timeout) {
+			return true // 只要有一次彻底成功，就判定为公开代理
+		}
+	}
+	return false // 连续3次都失败，才认为不是公开代理
 }
 
 // ==================== SOCKS5 测试（支持 ctx） ====================
