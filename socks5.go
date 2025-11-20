@@ -813,8 +813,7 @@ func loadWeakPasswords(file string) [][2]string {
 			{"dragon", "dragon"}, {"monkey", "monkey"}, {"football", "football"},
 			{"letmein", "letmein"}, {"sunshine", "sunshine"}, {"baseball", "baseball"},
 			{"princess", "princess"}, {"admin123", "admin123"}, {"superman", "superman"},
-			{"guest", "guest"}, {"", "123456"}, {"admin", ""}, {"", "admin"},
-			{"test", "test"}, {"demo", "demo"},
+			{"guest", "guest"}, {"test", "test"}, {"demo", "demo"},
 		}
 	}
 	var list [][2]string
